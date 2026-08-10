@@ -31,6 +31,11 @@ management.
 - 🖥️ **Streamlit dashboard** — live metrics, start/pause/stop control,
   runtime setting changes (no restart), portfolio & order tables, equity and
   grid-level Plotly charts, and a live log viewer.
+- 🧪 **Historical backtesting** — CCXT OHLCV download with local SQLite
+  caching, intra-candle order matching (limits fill when the candle range
+  crosses them, market/SL exits pay slippage), buy-&-hold benchmark, full
+  metrics (CAGR, max drawdown, Sharpe/Sortino, win rate, profit factor), a
+  CLI, and a dedicated dashboard tab with interactive Plotly analysis.
 - 🧹 **Graceful shutdown** — SIGINT/SIGTERM flush all state to SQLite, close
   WebSockets and the database, and exit with code 0.
 - 📝 **Structured logging** via `loguru`: live ticks, simulated fills, a
@@ -39,6 +44,7 @@ management.
 ## Project layout
 
 ```
+backtester/   Historical data loader + cache, backtest engine, metrics, CLI
 config/       Settings via pydantic-settings + .env
 connectors/   Exchange abstraction + ccxt.pro connector (Bitvavo, Kraken)
 dashboard/    Streamlit web dashboard (reads/writes the SQLite database)
@@ -47,7 +53,7 @@ storage/      Async SQLite layer, engine persistence, runtime config sync
 strategies/   BaseStrategy, grid trading, SMA crossover
 risk/         RiskManager (allocation, drawdown, SL/TP enforcement)
 utils/        loguru logging setup, graceful shutdown, backoff helper
-tests/        pytest unit tests (fills, risk, signals, persistence, config)
+tests/        pytest unit tests (fills, risk, signals, persistence, backtests)
 main.py       Async entry point
 ```
 
@@ -172,6 +178,39 @@ dashboard edits), applies any stored overrides, restores the account and open
 orders into the paper engine, and rehydrates each grid strategy — repairing
 levels whose orders no longer exist and discarding state whose grid
 configuration changed.
+
+## Backtesting
+
+Test a strategy on historical data before letting it trade — from the CLI:
+
+```bash
+python -m backtester.cli --symbol BTC/EUR --timeframe 5m --days 30 --strategy grid
+python -m backtester.cli --symbol ETH/EUR --timeframe 1h --days 90 \
+    --strategy sma_crossover --sma-fast 12 --sma-slow 48 --capital 5000 \
+    --output trades.csv
+```
+
+or interactively from the dashboard's **🧪 Backtesting** tab (symbol,
+timeframe, date range, capital, strategy parameters, fee and slippage
+sliders), which renders metric cards (bot vs buy-&-hold, max drawdown,
+Sharpe, win rate), an equity-curve comparison, a price chart with entry/exit
+markers, a drawdown chart, and a downloadable trade history.
+
+How the simulation works:
+
+- OHLCV candles are downloaded via CCXT with pagination and cached in
+  `data/historical/{exchange}_{symbol}_{timeframe}.sqlite`; repeated runs
+  only fetch the missing head/tail of the requested range.
+- The backtest reuses the **same** `PaperEngine`, `RiskManager`, and strategy
+  classes as live trading. Each candle is replayed as an intra-candle price
+  path (`open → low → high → close` for up candles, mirrored for down
+  candles): resting limit orders fill at their limit price (maker fee) when
+  the candle range crosses them; market orders and stop-loss / take-profit
+  exits — evaluated at every path point, so intra-candle spikes trigger
+  them — fill with configurable slippage (default 0.05%) plus the taker fee.
+- Strategies only see candle closes, mirroring live indicator behavior, and
+  a buy-&-hold benchmark (all-in at the first open, taker fee applied) is
+  tracked alongside for comparison.
 
 ## Testing
 

@@ -368,6 +368,229 @@ def render_analytics_tab(cfg: dict[str, str]) -> None:
         st.plotly_chart(fig, width="stretch")
 
 
+def render_backtest_tab(cfg: dict[str, str]) -> None:
+    """Historical backtesting: control form, metrics, and Plotly analysis."""
+    from dataclasses import asdict
+    from datetime import date, datetime, timedelta, timezone
+
+    st.subheader("Backtesting")
+    st.caption(
+        "Downloads historical OHLCV data via CCXT (cached locally in "
+        "`data/historical/`) and replays it through the same strategy, "
+        "matching, and risk logic the live bot uses."
+    )
+
+    def fnum(key: str, default: float) -> float:
+        try:
+            return float(cfg.get(key, default))
+        except ValueError:
+            return default
+
+    symbols = [s.strip() for s in cfg.get("symbols", "BTC/EUR").split(",") if s.strip()]
+    symbol_options = list(dict.fromkeys(symbols + ["BTC/EUR", "ETH/EUR", "XRP/EUR", "SOL/EUR"]))
+
+    with st.form("backtest_form"):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            symbol = st.selectbox("Symbol", symbol_options, index=0)
+            timeframe = st.selectbox("Timeframe", ["1m", "5m", "15m", "1h", "1d"], index=3)
+            exchange = st.selectbox("Exchange", ["bitvavo", "kraken"], index=0)
+            capital = st.number_input(
+                "Initial capital (€)", min_value=100.0, value=10_000.0, step=500.0
+            )
+        with c2:
+            start_date = st.date_input("Start date", value=date.today() - timedelta(days=30))
+            end_date = st.date_input("End date", value=date.today())
+            strategy_name = st.selectbox("Strategy", ["grid", "sma_crossover"], index=0)
+            st.markdown("**Grid parameters**")
+            grid_levels = st.number_input("Grid levels", 1, 50, int(fnum("grid_levels", 5)))
+            grid_spacing = st.number_input(
+                "Grid spacing (%)", 0.01, 49.0,
+                fnum("grid_spacing_pct", 0.005) * 100.0, step=0.05, format="%.2f",
+            )
+            grid_order_size = st.number_input(
+                "Grid order size (€)", 1.0, value=fnum("grid_order_quote_size", 100.0)
+            )
+        with c3:
+            st.markdown("**SMA parameters**")
+            sma_fast = st.number_input("SMA fast period", 2, 500, 10)
+            sma_slow = st.number_input("SMA slow period", 3, 1000, 30)
+            st.markdown("**Costs**")
+            maker_fee = st.slider("Maker fee (%)", 0.0, 1.0, 0.15, step=0.01)
+            taker_fee = st.slider("Taker fee (%)", 0.0, 1.0, 0.25, step=0.01)
+            slippage = st.slider("Slippage (%)", 0.0, 1.0, 0.05, step=0.01)
+
+        run_clicked = st.form_submit_button("🚀 Run Backtest", type="primary")
+
+    if run_clicked:
+        import asyncio
+
+        from backtester.data_loader import OHLCVDataLoader, candles_from_df
+        from backtester.engine import BacktestEngine
+        from backtester.metrics import compute_metrics
+        from strategies.grid_trading import GridTradingStrategy
+        from strategies.sma_crossover import SmaCrossoverStrategy
+
+        if sma_slow <= sma_fast:
+            st.error("SMA slow period must be greater than the fast period.")
+            return
+        if end_date <= start_date:
+            st.error("End date must be after the start date.")
+            return
+        start_ms = int(datetime.combine(start_date, datetime.min.time(), timezone.utc).timestamp() * 1000)
+        end_ms = int(datetime.combine(end_date, datetime.max.time(), timezone.utc).timestamp() * 1000)
+
+        try:
+            with st.spinner("Loading historical data (cache-aware)…"):
+                loader = OHLCVDataLoader(exchange_id=exchange)
+                df = loader.load(symbol, timeframe, start_ms, end_ms)
+            if df.empty:
+                st.error("No historical data available for this range.")
+                return
+            if strategy_name == "grid":
+                strategy = GridTradingStrategy(
+                    symbol, levels=int(grid_levels),
+                    spacing_pct=grid_spacing / 100.0,
+                    order_quote_size=grid_order_size,
+                )
+            else:
+                strategy = SmaCrossoverStrategy(
+                    symbol, fast_period=int(sma_fast), slow_period=int(sma_slow),
+                    order_quote_size=grid_order_size,
+                )
+            settings = Settings(
+                _env_file=None,
+                symbols=[symbol],
+                stop_loss_pct=fnum("stop_loss_pct", 0.02),
+                take_profit_pct=fnum("take_profit_pct", 0.04),
+                max_allocation_pct=fnum("max_allocation_pct", 0.10),
+            )
+            engine = BacktestEngine(
+                strategy=strategy, settings=settings, initial_capital=capital,
+                maker_fee_rate=maker_fee / 100.0, taker_fee_rate=taker_fee / 100.0,
+                slippage_rate=slippage / 100.0,
+            )
+            with st.spinner(f"Replaying {len(df)} candles…"):
+                result = asyncio.run(engine.run(candles_from_df(df), timeframe=timeframe))
+            st.session_state["backtest"] = {
+                "result": result,
+                "metrics": compute_metrics(result),
+                "candles": df,
+            }
+        except Exception as exc:  # surface loader/engine errors in the UI
+            st.error(f"Backtest failed: {exc}")
+            return
+
+    stored = st.session_state.get("backtest")
+    if not stored:
+        st.info("Configure a backtest above and press **Run Backtest**.")
+        return
+
+    from backtester.models import drawdown_series
+
+    result = stored["result"]
+    metrics = stored["metrics"]
+    candles = stored["candles"]
+
+    # --- metric cards ---------------------------------------------------
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric(
+        "Bot Return", f"{metrics.total_return_pct:+.2f}%",
+        f"{metrics.total_return_pct - metrics.benchmark_return_pct:+.2f}% vs B&H",
+    )
+    m2.metric("Buy & Hold", f"{metrics.benchmark_return_pct:+.2f}%")
+    m3.metric("Max Drawdown", f"−{metrics.max_drawdown_pct:.2f}%")
+    m4.metric("Sharpe", f"{metrics.sharpe_ratio:.2f}")
+    m5.metric(
+        "Win Rate", f"{metrics.win_rate_pct:.1f}%",
+        f"{metrics.winning_trades}W / {metrics.losing_trades}L",
+    )
+    st.caption(
+        f"PnL €{metrics.total_pnl:+,.2f} · CAGR {metrics.cagr_pct:+.2f}% · "
+        f"Sortino {metrics.sortino_ratio:.2f} · profit factor "
+        f"{metrics.profit_factor:.2f} · {metrics.total_trades} trades · "
+        f"fees €{metrics.total_fees:,.2f}"
+    )
+
+    times = pd.to_datetime(pd.Series(result.timestamps), unit="s")
+
+    # --- chart 1: equity vs buy & hold ----------------------------------
+    st.markdown("##### Equity curve vs Buy & Hold")
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=times, y=result.equity, name="Strategy",
+                             line={"color": "#6366f1", "width": 2}))
+    fig.add_trace(go.Scatter(x=times, y=result.benchmark, name="Buy & Hold",
+                             line={"color": "#9ca3af", "width": 2, "dash": "dot"}))
+    fig.update_layout(height=340, margin={"l": 10, "r": 10, "t": 10, "b": 10},
+                      yaxis_title="Equity (€)", legend={"orientation": "h"})
+    st.plotly_chart(fig, width="stretch")
+
+    # --- chart 2: price with trade markers ------------------------------
+    st.markdown("##### Price & trades")
+    fig = go.Figure()
+    if len(candles) <= 2000:
+        fig.add_trace(
+            go.Candlestick(
+                x=pd.to_datetime(candles["timestamp"], unit="ms"),
+                open=candles["open"], high=candles["high"],
+                low=candles["low"], close=candles["close"],
+                name="Price", showlegend=False,
+            )
+        )
+        fig.update_layout(xaxis_rangeslider_visible=False)
+    else:
+        fig.add_trace(go.Scatter(x=times, y=result.close_prices, name="Close",
+                                 line={"color": "#9ca3af", "width": 1.5}))
+    buys = [t for t in result.trades if t.side == "buy"]
+    sells = [t for t in result.trades if t.side == "sell"]
+    if buys:
+        fig.add_trace(go.Scatter(
+            x=pd.to_datetime([t.timestamp for t in buys], unit="s"),
+            y=[t.price for t in buys], mode="markers", name="Entries",
+            marker={"symbol": "triangle-up", "size": 10, "color": "#21c55d"},
+        ))
+    if sells:
+        fig.add_trace(go.Scatter(
+            x=pd.to_datetime([t.timestamp for t in sells], unit="s"),
+            y=[t.price for t in sells], mode="markers", name="Exits",
+            marker={"symbol": "triangle-down", "size": 10, "color": "#ef4444"},
+        ))
+    fig.update_layout(height=380, margin={"l": 10, "r": 10, "t": 10, "b": 10},
+                      yaxis_title="Price (€)", legend={"orientation": "h"})
+    st.plotly_chart(fig, width="stretch")
+
+    # --- chart 3: drawdown ----------------------------------------------
+    st.markdown("##### Drawdown")
+    dd = [100.0 * d for d in drawdown_series(result.equity)]
+    fig = go.Figure(
+        go.Scatter(x=times, y=dd, fill="tozeroy", name="Drawdown",
+                   line={"color": "#ef4444", "width": 1.5})
+    )
+    fig.update_layout(height=240, margin={"l": 10, "r": 10, "t": 10, "b": 10},
+                      yaxis_title="Drawdown (%)")
+    st.plotly_chart(fig, width="stretch")
+
+    # --- trade history ---------------------------------------------------
+    st.markdown("##### Trade history")
+    if not result.trades:
+        st.info("No trades were executed in this backtest.")
+        return
+    trades_df = pd.DataFrame([asdict(t) for t in result.trades])
+    trades_df["time"] = pd.to_datetime(trades_df["timestamp"], unit="s")
+    trades_df = trades_df[
+        ["time", "side", "type", "price", "amount", "fee", "realized_pnl"]
+    ]
+    numeric_cols = ["price", "amount", "fee", "realized_pnl"]
+    trades_df[numeric_cols] = trades_df[numeric_cols].round(6)
+    st.dataframe(trades_df, width="stretch", hide_index=True)
+    st.download_button(
+        "⬇️ Download trades CSV",
+        data=trades_df.to_csv(index=False).encode("utf-8"),
+        file_name=f"backtest_{result.symbol.replace('/', '-')}_{result.timeframe}.csv",
+        mime="text/csv",
+    )
+
+
 def render_logs_tab() -> None:
     """Tail of the bot's rotating log file."""
     st.subheader("Live Logs")
@@ -399,9 +622,9 @@ def main() -> None:
     cfg = load_config()
     render_header(cfg)
 
-    tab_settings, tab_portfolio, tab_analytics, tab_logs = st.tabs(
+    tab_settings, tab_portfolio, tab_analytics, tab_logs, tab_backtest = st.tabs(
         ["⚙️ Control & Settings", "💼 Portfolio & Orders",
-         "📊 Analytics & Grid", "📜 Live Logs"]
+         "📊 Analytics & Grid", "📜 Live Logs", "🧪 Backtesting"]
     )
     with tab_settings:
         render_settings_tab(cfg)
@@ -411,6 +634,8 @@ def main() -> None:
         render_analytics_tab(cfg)
     with tab_logs:
         render_logs_tab()
+    with tab_backtest:
+        render_backtest_tab(cfg)
 
     with st.sidebar:
         st.markdown("### Refresh")

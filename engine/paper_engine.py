@@ -89,11 +89,16 @@ class PaperEngine:
         balances: Initial funds per currency, e.g. ``{"EUR": 10_000.0}``.
         maker_fee_rate: Fee fraction charged on resting limit fills.
         taker_fee_rate: Fee fraction charged on market / crossing fills.
+        slippage_rate: Adverse price impact applied to market executions
+            (buys fill at ``ask * (1 + slippage)``, sells at
+            ``bid * (1 - slippage)``). Limit orders are price-protected and
+            never slip. Defaults to 0 (used by backtests for realism).
     """
 
     balances: dict[str, Balance]
     maker_fee_rate: float = 0.0015
     taker_fee_rate: float = 0.0025
+    slippage_rate: float = 0.0
 
     open_orders: dict[str, Order] = field(default_factory=dict)
     closed_orders: list[Order] = field(default_factory=list)
@@ -109,6 +114,7 @@ class PaperEngine:
         starting_balances: dict[str, float],
         maker_fee_rate: float = 0.0015,
         taker_fee_rate: float = 0.0025,
+        slippage_rate: float = 0.0,
     ) -> "PaperEngine":
         """Build an engine from plain ``{currency: amount}`` starting funds."""
         return cls(
@@ -118,6 +124,7 @@ class PaperEngine:
             },
             maker_fee_rate=maker_fee_rate,
             taker_fee_rate=taker_fee_rate,
+            slippage_rate=slippage_rate,
         )
 
     # ------------------------------------------------------------------
@@ -223,7 +230,10 @@ class PaperEngine:
         fills: list[Fill] = []
         if order.type is OrderType.MARKET:
             assert ticker is not None
-            price = ticker.ask if order.side is OrderSide.BUY else ticker.bid
+            if order.side is OrderSide.BUY:
+                price = ticker.ask * (1.0 + self.slippage_rate)
+            else:
+                price = ticker.bid * (1.0 - self.slippage_rate)
             fills.append(self._fill_order(order, price, self.taker_fee_rate))
         elif ticker is not None and order.price is not None:
             # A limit order that crosses the current book executes as taker.
@@ -310,7 +320,7 @@ class PaperEngine:
                 reference = order.price
             else:
                 assert ticker is not None
-                reference = ticker.ask
+                reference = ticker.ask * (1.0 + self.slippage_rate)
             required = order.amount * reference * (1.0 + self.taker_fee_rate)
             self._balance(quote).reserve(required)
             self._reservations[order.id] = _Reservation(currency=quote, amount=required)

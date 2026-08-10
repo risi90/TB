@@ -176,6 +176,23 @@ class GridTradingStrategy(BaseStrategy):
                 level.state = _LevelState.IDLE
                 return
 
+    def on_order_canceled(self, order: Order) -> None:
+        """Reset the level bound to a canceled order.
+
+        Used e.g. when a protective stop-loss exit cancels resting grid sells:
+        the inventory is gone, so the level returns to IDLE and re-arms.
+        """
+        for level in self._grid:
+            if order.id == level.buy_order_id:
+                level.state = _LevelState.IDLE
+                level.buy_order_id = None
+                return
+            if order.id == level.sell_order_id:
+                level.state = _LevelState.IDLE
+                level.sell_order_id = None
+                level.amount = 0.0
+                return
+
     # ------------------------------------------------------------------
     # State persistence
     # ------------------------------------------------------------------
