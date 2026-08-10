@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from config.config import Settings
 from storage.config_sync import ConfigSync
@@ -117,6 +118,37 @@ async def test_bot_status_transitions_reported(
     await sync.set_bot_status("stopped")
     assert await db.get_config("bot_status") == "stopped"
     assert sync.bot_status == "stopped"
+
+
+# ---------------------------------------------------------------------------
+# Fee floor enforcement
+# ---------------------------------------------------------------------------
+def test_grid_spacing_below_fee_floor_rejected_at_startup() -> None:
+    # Floor with default 0.15% maker fee: 2 * 0.0015 + 0.001 = 0.004.
+    with pytest.raises(ValidationError, match="fee floor"):
+        Settings(_env_file=None, grid_spacing_pct=0.002)
+
+
+def test_fee_floor_only_applies_to_grid_strategy() -> None:
+    settings = Settings(
+        _env_file=None, strategy="sma_crossover", grid_spacing_pct=0.002
+    )
+    assert settings.grid_spacing_pct == pytest.approx(0.002)
+    assert Settings(_env_file=None).grid_fee_floor() == pytest.approx(0.004)
+
+
+async def test_runtime_spacing_below_fee_floor_ignored(
+    db: Database, settings: Settings, sync: ConfigSync
+) -> None:
+    before = settings.grid_spacing_pct
+    await db.set_config("grid_spacing_pct", "0.001")  # below the 0.004 floor
+    assert await sync.poll() == []
+    assert settings.grid_spacing_pct == pytest.approx(before)
+    # A compliant value is applied afterwards.
+    await db.set_config("grid_spacing_pct", "0.008")
+    changes = await sync.poll()
+    assert [c.key for c in changes] == ["grid_spacing_pct"]
+    assert settings.grid_spacing_pct == pytest.approx(0.008)
 
 
 async def test_dashboard_settings_survive_restart(

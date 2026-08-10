@@ -280,7 +280,8 @@ class PaperEngine:
         return total
 
     def realized_pnl(self) -> float:
-        """Sum of realized PnL across all positions (fees not deducted)."""
+        """Sum of **net** realized PnL across all positions (fees deducted:
+        each sale's fee plus the proportional entry fees of the closed amount)."""
         return sum(p.realized_pnl for p in self.positions.values())
 
     def unrealized_pnl(self) -> float:
@@ -368,15 +369,15 @@ class PaperEngine:
 
         position = self.positions.setdefault(order.symbol, Position(symbol=order.symbol))
         if order.side is OrderSide.BUY:
-            position.apply_buy(amount, price)
+            position.apply_buy(amount, price, fee=fee)
             if order.stop_loss is not None:
                 position.stop_loss = order.stop_loss
             if order.take_profit is not None:
                 position.take_profit = order.take_profit
         else:
-            realized = position.apply_sell(amount, price)
+            realized = position.apply_sell(amount, price, fee=fee)
             logger.info(
-                "Realized PnL {:+.2f} {} on {} (sold {:.8f} @ {:.2f})",
+                "Realized net PnL {:+.2f} {} on {} (sold {:.8f} @ {:.2f}, fees incl.)",
                 realized, quote, order.symbol, amount, price,
             )
 

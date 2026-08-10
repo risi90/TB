@@ -166,7 +166,9 @@ async def test_grid_limit_fills_when_candle_low_reaches_price() -> None:
     # The paired grid sell at 100 fills within the same candle's range.
     assert len(sells) == 1
     assert sells[0].price == pytest.approx(100.0)
-    assert sells[0].realized_pnl == pytest.approx(sells[0].amount * 1.0)
+    # Realized PnL is NET: gross spacing profit minus entry and exit fees.
+    gross = sells[0].amount * 1.0
+    assert sells[0].realized_pnl == pytest.approx(gross - buys[0].fee - sells[0].fee)
     assert strategy.total_cycles == 1
 
 
@@ -214,9 +216,11 @@ async def test_stop_loss_triggers_intra_candle() -> None:
     result = await engine.run(candles, timeframe="1m")
 
     sells = [t for t in result.trades if t.side == "sell"]
+    buys = [t for t in result.trades if t.side == "buy"]
     assert len(sells) == 1
     assert sells[0].price == pytest.approx(94.0)  # exit at the touched low
-    assert sells[0].realized_pnl == pytest.approx(-6.0)
+    # Net realized loss: gross -6 minus entry and exit fees.
+    assert sells[0].realized_pnl == pytest.approx(-6.0 - buys[0].fee - sells[0].fee)
     # Even though the candle CLOSED back at 100, the intra-candle stop fired.
 
 

@@ -19,6 +19,7 @@ not a settings field but drives the trading loop.
 
 from __future__ import annotations
 
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
@@ -126,9 +127,15 @@ class ConfigSync:
                 continue
             # Remember the raw value first so a bad value doesn't log forever.
             self._last_seen[key] = new_raw
+            previous_value = getattr(self._settings, key)
             try:
                 setattr(self._settings, key, self._parse(key, new_raw))
             except ValidationError as exc:
+                # Pydantic sets the field before model-level validators run on
+                # assignment, so a cross-field failure (e.g. the grid fee
+                # floor) leaves the bad value behind — roll it back.
+                with suppress(ValidationError):
+                    setattr(self._settings, key, previous_value)
                 logger.warning(
                     "Ignoring invalid runtime config {}={!r}: {}",
                     key, new_raw, exc.errors()[0].get("msg", exc),

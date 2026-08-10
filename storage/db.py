@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS positions (
     amount       REAL NOT NULL,
     entry_price  REAL NOT NULL,
     realized_pnl REAL NOT NULL,
+    entry_fees   REAL NOT NULL DEFAULT 0,
     stop_loss    REAL,
     take_profit  REAL,
     updated_at   REAL NOT NULL
@@ -137,6 +138,16 @@ class Database:
         await self._conn.execute("PRAGMA journal_mode=WAL")
         await self._conn.execute("PRAGMA busy_timeout=5000")
         await self._conn.executescript(_SCHEMA)
+        await self._migrate()
+
+    async def _migrate(self) -> None:
+        """Bring pre-existing databases up to the current schema."""
+        async with self.conn.execute("PRAGMA table_info(positions)") as cursor:
+            columns = {row["name"] for row in await cursor.fetchall()}
+        if "entry_fees" not in columns:
+            await self.conn.execute(
+                "ALTER TABLE positions ADD COLUMN entry_fees REAL NOT NULL DEFAULT 0"
+            )
 
     async def close(self) -> None:
         """Close the underlying connection (idempotent)."""
@@ -217,16 +228,18 @@ class Database:
         """Upsert one position snapshot."""
         await self.conn.execute(
             "INSERT INTO positions (symbol, amount, entry_price, realized_pnl, "
-            "stop_loss, take_profit, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "entry_fees, stop_loss, take_profit, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(symbol) DO UPDATE SET amount=excluded.amount, "
             "entry_price=excluded.entry_price, realized_pnl=excluded.realized_pnl, "
-            "stop_loss=excluded.stop_loss, take_profit=excluded.take_profit, "
-            "updated_at=excluded.updated_at",
+            "entry_fees=excluded.entry_fees, stop_loss=excluded.stop_loss, "
+            "take_profit=excluded.take_profit, updated_at=excluded.updated_at",
             (
                 position.symbol,
                 position.amount,
                 position.entry_price,
                 position.realized_pnl,
+                position.entry_fees,
                 position.stop_loss,
                 position.take_profit,
                 time.time(),
@@ -243,6 +256,7 @@ class Database:
                 amount=float(row["amount"]),
                 entry_price=float(row["entry_price"]),
                 realized_pnl=float(row["realized_pnl"]),
+                entry_fees=float(row["entry_fees"]),
                 stop_loss=None if row["stop_loss"] is None else float(row["stop_loss"]),
                 take_profit=(
                     None if row["take_profit"] is None else float(row["take_profit"])

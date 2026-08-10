@@ -82,6 +82,14 @@ class BacktestEngine:
         self._maker_fee_rate = maker_fee_rate
         self._taker_fee_rate = taker_fee_rate
         self._slippage_rate = slippage_rate
+        if isinstance(strategy, GridTradingStrategy):
+            fee_floor = 2.0 * maker_fee_rate + 0.001
+            if strategy.spacing_pct < fee_floor:
+                logger.warning(
+                    "Grid spacing {:.3%} is below the fee floor {:.3%} "
+                    "(2 x maker fee + 0.1%) — every completed cycle will lose money",
+                    strategy.spacing_pct, fee_floor,
+                )
         # Run state (created in run()):
         self._paper: PaperEngine | None = None
         self._risk: RiskManager | None = None
@@ -163,6 +171,14 @@ class BacktestEngine:
 
             if is_close:
                 await self._strategy.on_ticker(ticker)
+                # Candle IS the live Bar type, so indicator-driven strategies
+                # see the exact series they would receive live.
+                await self._strategy.on_bar_close(candle)
+                for order_id in self._strategy.generate_cancellations():
+                    try:
+                        self._paper.cancel_order(order_id)
+                    except PaperEngineError as exc:
+                        logger.debug("Backtest cancel skipped: {}", exc)
                 for request in self._strategy.generate_signals():
                     await self._submit(request, ticker)
 

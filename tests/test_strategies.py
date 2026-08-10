@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from engine.candle_aggregator import Bar
 from engine.models import Order, OrderSide, OrderStatus, OrderType
 from strategies.grid_trading import GridTradingStrategy, _LevelState
 from strategies.sma_crossover import SmaCrossoverStrategy
@@ -87,11 +88,13 @@ async def test_grid_level_rearms_after_sell_fill() -> None:
 
 
 # ---------------------------------------------------------------------------
-# SMA crossover
+# SMA crossover (bar-driven: indicators only move on completed bar closes)
 # ---------------------------------------------------------------------------
-async def _feed(strategy: SmaCrossoverStrategy, prices: list[float]) -> None:
-    for price in prices:
-        await strategy.on_ticker(make_ticker(bid=price - 0.5, ask=price + 0.5, last=price))
+async def _feed(strategy: SmaCrossoverStrategy, closes: list[float]) -> None:
+    for i, close in enumerate(closes):
+        await strategy.on_bar_close(
+            Bar(timestamp=i * 60.0, open=close, high=close, low=close, close=close)
+        )
 
 
 async def test_sma_golden_cross_emits_buy() -> None:
@@ -106,6 +109,16 @@ async def test_sma_golden_cross_emits_buy() -> None:
     assert len(signals) == 1
     assert signals[0].side is OrderSide.BUY
     assert signals[0].type is OrderType.MARKET
+
+
+async def test_sma_raw_ticks_never_move_the_indicator() -> None:
+    strategy = SmaCrossoverStrategy(
+        "BTC/EUR", fast_period=2, slow_period=4, order_quote_size=100.0
+    )
+    for price in [110.0, 108.0, 106.0, 104.0, 102.0, 112.0, 120.0]:
+        await strategy.on_ticker(make_ticker(bid=price - 0.5, ask=price + 0.5, last=price))
+    assert strategy.fast_sma is None
+    assert strategy.generate_signals() == []
 
 
 async def test_sma_death_cross_emits_sell_only_with_position() -> None:

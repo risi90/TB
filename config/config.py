@@ -13,8 +13,10 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from engine.candle_aggregator import TIMEFRAMES_MS
 
 SupportedExchange = Literal["bitvavo", "kraken"]
 StrategyName = Literal["grid", "sma_crossover"]
@@ -53,10 +55,20 @@ class Settings(BaseSettings):
 
     # --- Strategy -------------------------------------------------------
     strategy: StrategyName = "grid"
+    bar_timeframe: str = Field(
+        default="1m",
+        description="Timeframe of the live bars strategies compute indicators on.",
+    )
 
     grid_levels: int = Field(default=5, ge=1, le=50)
     grid_spacing_pct: float = Field(default=0.005, gt=0, lt=0.5)
     grid_order_quote_size: float = Field(default=100.0, gt=0)
+    grid_auto_reanchor: bool = True
+    grid_reanchor_factor: float = Field(default=1.5, gt=0)
+    grid_max_inventory_quote: float = Field(
+        default=0.0, ge=0,
+        description="Committed-capital cap in quote currency; 0 = one full grid.",
+    )
 
     sma_fast_period: int = Field(default=10, ge=2)
     sma_slow_period: int = Field(default=30, ge=3)
@@ -69,6 +81,12 @@ class Settings(BaseSettings):
     take_profit_pct: float = Field(default=0.04, gt=0, lt=1)
     max_open_orders: int = Field(default=10, ge=1)
     min_order_notional: float = Field(default=5.0, ge=0)
+
+    # --- Notifications --------------------------------------------------
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    discord_webhook_url: str = ""
+    digest_interval_hours: float = Field(default=24.0, gt=0)
 
     # --- Persistence ----------------------------------------------------
     db_path: str = "data/bot_state.db"
@@ -96,6 +114,37 @@ class Settings(BaseSettings):
         if fast is not None and value <= fast:
             raise ValueError("sma_slow_period must be greater than sma_fast_period")
         return value
+
+    @field_validator("bar_timeframe")
+    @classmethod
+    def _known_timeframe(cls, value: str) -> str:
+        if value not in TIMEFRAMES_MS:
+            raise ValueError(
+                f"bar_timeframe must be one of {sorted(TIMEFRAMES_MS)}"
+            )
+        return value
+
+    def grid_fee_floor(self) -> float:
+        """Minimum profitable grid spacing: a completed cycle pays roughly two
+        maker fees, plus a 0.1% safety margin for slippage and spread."""
+        return 2.0 * self.maker_fee_rate + 0.001
+
+    @model_validator(mode="after")
+    def _grid_spacing_covers_fees(self) -> "Settings":
+        """Block grid configurations that are structurally unprofitable.
+
+        A grid cycle earns ``spacing`` and pays ~two maker fees; spacing at
+        or below that guarantees every cycle loses money. Only enforced when
+        the grid strategy is active. Re-checked on runtime assignment
+        (``validate_assignment=True``), so dashboard edits are vetted too.
+        """
+        if self.strategy == "grid" and self.grid_spacing_pct < self.grid_fee_floor():
+            raise ValueError(
+                f"grid_spacing_pct {self.grid_spacing_pct:.4%} is below the fee "
+                f"floor {self.grid_fee_floor():.4%} (2 x maker fee + 0.1% margin) "
+                f"— every grid cycle would lose money"
+            )
+        return self
 
     def live_trading_allowed(self) -> bool:
         """Return ``True`` only when live trading is explicitly and safely enabled.

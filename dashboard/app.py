@@ -237,21 +237,66 @@ def render_settings_tab(cfg: dict[str, str]) -> None:
             )
 
         if st.form_submit_button("💾 Save & Apply Settings", type="primary"):
-            save_config(
-                {
-                    "symbols": ",".join(
-                        s.strip().upper() for s in symbols.split(",") if s.strip()
-                    ),
-                    "exchange": exchange,
-                    "grid_levels": str(int(grid_levels)),
-                    "grid_spacing_pct": str(grid_spacing / 100.0),
-                    "grid_order_quote_size": str(order_size),
-                    "stop_loss_pct": str(stop_loss / 100.0),
-                    "take_profit_pct": str(take_profit / 100.0),
-                    "max_allocation_pct": str(max_alloc / 100.0),
-                }
-            )
-            st.success("Settings saved — the bot applies them on its next poll.")
+            # Fee floor: a grid cycle earns the spacing and pays ~2 maker
+            # fees; spacing below that is a guaranteed structural loss.
+            fee_floor_pct = (
+                2.0 * get_settings_cached().maker_fee_rate + 0.001
+            ) * 100.0
+            if grid_spacing < fee_floor_pct:
+                st.error(
+                    f"Not saved: grid spacing {grid_spacing:.2f}% is below the "
+                    f"fee floor {fee_floor_pct:.2f}% (2 × maker fee + 0.1% "
+                    f"margin) — every grid cycle would lose money."
+                )
+            else:
+                save_config(
+                    {
+                        "symbols": ",".join(
+                            s.strip().upper() for s in symbols.split(",") if s.strip()
+                        ),
+                        "exchange": exchange,
+                        "grid_levels": str(int(grid_levels)),
+                        "grid_spacing_pct": str(grid_spacing / 100.0),
+                        "grid_order_quote_size": str(order_size),
+                        "stop_loss_pct": str(stop_loss / 100.0),
+                        "take_profit_pct": str(take_profit / 100.0),
+                        "max_allocation_pct": str(max_alloc / 100.0),
+                    }
+                )
+                st.success("Settings saved — the bot applies them on its next poll.")
+
+    st.divider()
+    st.markdown("#### 📣 Notifications")
+    from utils.notifications import Notifier
+
+    notifier_settings = get_settings_cached()
+    channels = Notifier.from_settings(notifier_settings).channels
+    if channels:
+        st.caption(f"Configured channels: {', '.join(channels)}")
+    else:
+        st.caption(
+            "No channels configured — set `TELEGRAM_BOT_TOKEN` + "
+            "`TELEGRAM_CHAT_ID` and/or `DISCORD_WEBHOOK_URL` in `.env`."
+        )
+    if st.button("🔔 Send test notification"):
+        if not channels:
+            st.warning("Configure at least one webhook channel in `.env` first.")
+        else:
+            import asyncio
+
+            async def _send_test() -> bool:
+                notifier = Notifier.from_settings(notifier_settings)
+                try:
+                    return await notifier.send(
+                        "🔔 Test notification from the trading bot dashboard"
+                    )
+                finally:
+                    await notifier.close()
+
+            if asyncio.run(_send_test()):
+                st.success(f"Test message delivered via {', '.join(channels)}.")
+            else:
+                st.error("Delivery failed — check tokens/URLs and the bot log.")
 
 
 def render_portfolio_tab(cfg: dict[str, str]) -> None:
@@ -437,6 +482,13 @@ def render_backtest_tab(cfg: dict[str, str]) -> None:
         if end_date <= start_date:
             st.error("End date must be after the start date.")
             return
+        bt_fee_floor = 2.0 * maker_fee + 0.1  # both in percent
+        if strategy_name == "grid" and grid_spacing < bt_fee_floor:
+            st.warning(
+                f"Grid spacing {grid_spacing:.2f}% is below the fee floor "
+                f"{bt_fee_floor:.2f}% (2 × maker fee + 0.1%) — expect every "
+                f"cycle to lose money in this backtest."
+            )
         start_ms = int(datetime.combine(start_date, datetime.min.time(), timezone.utc).timestamp() * 1000)
         end_ms = int(datetime.combine(end_date, datetime.max.time(), timezone.utc).timestamp() * 1000)
 

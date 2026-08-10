@@ -1,43 +1,24 @@
-"""Shared backtesting data structures and timeframe helpers."""
+"""Shared backtesting data structures and timeframe helpers.
+
+``Candle`` is an alias of :class:`engine.candle_aggregator.Bar` — the exact
+type live strategies receive in ``on_bar_close`` — so a backtested strategy
+consumes byte-identical inputs to its live counterpart. The timeframe table
+is likewise shared with the live candle aggregator.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Sequence
 
-#: Supported CCXT timeframes and their duration in milliseconds.
-TIMEFRAMES_MS: dict[str, int] = {
-    "1m": 60_000,
-    "5m": 300_000,
-    "15m": 900_000,
-    "30m": 1_800_000,
-    "1h": 3_600_000,
-    "4h": 14_400_000,
-    "1d": 86_400_000,
-}
+from engine.candle_aggregator import (  # noqa: F401  (re-exported)
+    TIMEFRAMES_MS,
+    Bar,
+    timeframe_to_ms,
+)
 
-
-def timeframe_to_ms(timeframe: str) -> int:
-    """Duration of one candle in milliseconds for a CCXT timeframe string."""
-    try:
-        return TIMEFRAMES_MS[timeframe]
-    except KeyError:
-        raise ValueError(
-            f"unsupported timeframe {timeframe!r}; expected one of "
-            f"{sorted(TIMEFRAMES_MS)}"
-        ) from None
-
-
-@dataclass(slots=True)
-class Candle:
-    """One OHLCV candle. ``timestamp`` is the candle open time in seconds."""
-
-    timestamp: float
-    open: float
-    high: float
-    low: float
-    close: float
-    volume: float = 0.0
+#: One OHLCV candle (identical to the live Bar type; timestamps in seconds).
+Candle = Bar
 
 
 @dataclass(slots=True)

@@ -137,8 +137,11 @@ def cagr(
 def trade_stats(trades: Sequence[TradeRecord]) -> tuple[float, float, int, int]:
     """Win rate %, profit factor, winning and losing closed-trade counts.
 
-    A "closed trade" is a sell fill; its ``realized_pnl`` decides win/loss.
-    Profit factor is gross profit / gross loss (``inf`` with no losses).
+    A "closed trade" is a sell fill; its ``realized_pnl`` — which the engines
+    compute **net of all fees and slippage** (sell fee plus the proportional
+    entry fees of the closed amount) — decides win/loss, so a trade that only
+    wins gross of costs counts as a loss. Profit factor is net profit / net
+    loss (``inf`` with no losses).
     """
     closed = [t for t in trades if t.side == "sell"]
     wins = [t for t in closed if t.realized_pnl > 0]

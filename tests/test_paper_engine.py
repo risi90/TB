@@ -64,7 +64,7 @@ def test_crossing_buy_limit_fills_immediately_as_taker(engine: PaperEngine) -> N
     assert fills[0].fee == pytest.approx(0.5 * 101.0 * 0.0025)
 
 
-def test_sell_limit_fills_when_bid_rises_and_realizes_pnl(engine: PaperEngine) -> None:
+def test_sell_limit_fills_when_bid_rises_and_realizes_net_pnl(engine: PaperEngine) -> None:
     engine.process_ticker(make_ticker(bid=99.0, ask=100.0))
     engine.create_order(
         OrderRequest(symbol="BTC/EUR", side=OrderSide.BUY, type=OrderType.MARKET, amount=1.0)
@@ -80,8 +80,32 @@ def test_sell_limit_fills_when_bid_rises_and_realizes_pnl(engine: PaperEngine) -
     assert fills[0].price == pytest.approx(110.0)
     position = engine.positions["BTC/EUR"]
     assert position.amount == 0.0
-    assert position.realized_pnl == pytest.approx(110.0 - 100.0)
-    assert engine.realized_pnl() == pytest.approx(10.0)
+    # Realized PnL is NET of fees: gross 10 minus the entry fee (taker on the
+    # market buy at 100) and the exit fee (maker on the limit sell at 110).
+    entry_fee = 100.0 * 0.0025
+    exit_fee = 110.0 * 0.0015
+    assert position.realized_pnl == pytest.approx(10.0 - entry_fee - exit_fee)
+    assert engine.realized_pnl() == pytest.approx(10.0 - entry_fee - exit_fee)
+
+
+def test_partial_sell_allocates_entry_fees_proportionally(engine: PaperEngine) -> None:
+    engine.process_ticker(make_ticker(bid=99.0, ask=100.0))
+    engine.create_order(
+        OrderRequest(symbol="BTC/EUR", side=OrderSide.BUY, type=OrderType.MARKET, amount=2.0)
+    )
+    position = engine.positions["BTC/EUR"]
+    entry_fee_total = 2.0 * 100.0 * 0.0025
+    assert position.entry_fees == pytest.approx(entry_fee_total)
+
+    engine.process_ticker(make_ticker(bid=110.0, ask=111.0))
+    engine.create_order(
+        OrderRequest(symbol="BTC/EUR", side=OrderSide.SELL, type=OrderType.MARKET, amount=1.0)
+    )
+    # Half the position closed: half the entry fees are consumed.
+    sell_fee = 110.0 * 0.0025
+    assert position.realized_pnl == pytest.approx(10.0 - entry_fee_total / 2 - sell_fee)
+    assert position.entry_fees == pytest.approx(entry_fee_total / 2)
+    assert position.amount == pytest.approx(1.0)
 
 
 def test_insufficient_quote_funds_rejected(engine: PaperEngine) -> None:

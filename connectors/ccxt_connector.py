@@ -27,10 +27,15 @@ from ccxt.base.errors import (
 )
 from loguru import logger
 
+from typing import Awaitable, Callable
+
 from config.config import Settings
 from connectors.base import BaseConnector, OrderBookHandler, TickerHandler
 from engine.models import Order, OrderBook, OrderRequest, OrderStatus, Ticker
 from utils.resilience import ExponentialBackoff
+
+#: Receives (kind, message) where kind is "disconnect" or "reconnect".
+ConnectionEventHandler = Callable[[str, str], Awaitable[None]]
 
 _SUPPORTED_EXCHANGES = ("bitvavo", "kraken")
 _RATE_LIMIT_EXTRA_DELAY = 5.0
@@ -62,6 +67,23 @@ class CCXTProConnector(BaseConnector):
         if ws_proxy:
             self._exchange.ws_proxy = ws_proxy
         self._closed = False
+        self._event_handler: ConnectionEventHandler | None = None
+
+    def set_event_handler(self, handler: ConnectionEventHandler | None) -> None:
+        """Register a callback for connection events (disconnect/reconnect).
+
+        Used by the app to raise notifications; delivery failures inside the
+        handler are swallowed so they can never break a stream loop.
+        """
+        self._event_handler = handler
+
+    async def _emit_event(self, kind: str, message: str) -> None:
+        if self._event_handler is None:
+            return
+        try:
+            await self._event_handler(kind, message)
+        except Exception as exc:
+            logger.debug("Connection event handler failed: {}", exc)
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "CCXTProConnector":
@@ -86,6 +108,12 @@ class CCXTProConnector(BaseConnector):
         while not self._closed:
             try:
                 raw = await self._exchange.watch_ticker(symbol)
+                if backoff.attempt > 0:
+                    await self._emit_event(
+                        "reconnect",
+                        f"🔌 {symbol} ticker stream reconnected after "
+                        f"{backoff.attempt} attempt(s)",
+                    )
                 backoff.reset()
                 ticker = self._parse_ticker(symbol, raw)
                 if ticker is not None:
@@ -96,6 +124,9 @@ class CCXTProConnector(BaseConnector):
                     "Rate limited on {} ticker stream ({}); pausing {:.1f}s",
                     symbol, exc, delay,
                 )
+                await self._emit_event(
+                    "disconnect", f"⏳ {symbol} stream rate-limited; backing off"
+                )
                 await self._sleep(delay)
             except (NetworkError, ExchangeNotAvailable) as exc:
                 delay = backoff.next_delay()
@@ -103,6 +134,10 @@ class CCXTProConnector(BaseConnector):
                     "WebSocket error on {} ticker stream (attempt {}): {}; "
                     "reconnecting in {:.1f}s",
                     symbol, backoff.attempt, exc, delay,
+                )
+                await self._emit_event(
+                    "disconnect",
+                    f"⚠️ {symbol} WebSocket disconnected ({exc}); reconnecting",
                 )
                 await self._sleep(delay)
             except Exception as exc:  # keep the stream alive on parser surprises

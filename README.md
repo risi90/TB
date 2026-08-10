@@ -23,8 +23,19 @@ management.
   max allocation per trade, max portfolio drawdown circuit breaker, and
   mandatory stop-loss / take-profit stamped on every entry.
 - 📈 **Strategies** — pluggable via an abstract `BaseStrategy`
-  (`on_ticker`, `on_orderbook`, `generate_signals`), with a robust
-  **grid trading** strategy and a simple **SMA crossover** included.
+  (`on_ticker`, `on_bar_close`, `on_orderbook`, `generate_signals`), with a
+  robust **grid trading** strategy (auto re-anchoring + inventory cap) and a
+  simple **SMA crossover** included.
+- 🕯️ **Live candle aggregation** — raw WebSocket ticks are bucketed into
+  fixed-timeframe OHLCV bars (`BAR_TIMEFRAME`); indicators compute on
+  completed bar closes only, so live behavior matches backtests exactly
+  (no tick-rate distortion).
+- 💶 **Fee-aware accounting** — realized PnL and win rates are **net** of
+  maker/taker fees and slippage, and grid configurations whose spacing can't
+  cover round-trip fees are rejected outright.
+- 📣 **Notifications** — Telegram / Discord webhook alerts for fills, SL/TP
+  triggers, drawdown circuit-breaker events, WebSocket disconnects
+  (throttled), and a periodic PnL digest.
 - 💾 **SQLite persistence** (`aiosqlite`) — balances, positions, orders, grid
   levels, and the equity curve survive restarts; the grid resumes exactly
   where it left off.
@@ -122,6 +133,35 @@ All settings live in `.env` (see `.env.example` for the full list):
 Symbols, grid parameters, and risk limits can also be changed at runtime from
 the dashboard's **Control & Settings** tab; changing the exchange requires a
 bot restart.
+
+### Guardrails & strategy behavior
+
+- **Fee floor**: grid spacing must exceed `2 × MAKER_FEE_RATE + 0.1%` — a
+  completed grid cycle pays two maker fees, so tighter spacing loses money by
+  construction. Enforced at startup, on runtime config changes, and in the
+  dashboard form; the backtester warns.
+- **Grid re-anchoring** (`GRID_AUTO_REANCHOR`): when price drifts beyond
+  `GRID_REANCHOR_FACTOR × grid width` from the anchor, resting unfilled buys
+  are canceled and a fresh grid is built around the new price. Levels holding
+  inventory keep their sell orders and retire once sold.
+- **Inventory cap** (`GRID_MAX_INVENTORY_QUOTE`): hard ceiling on committed
+  capital (held inventory at entry value + resting buys), defaulting to one
+  full grid — prevents unbounded accumulation on a falling market across
+  re-anchors.
+- **Net PnL**: realized PnL, win rates, and profit factors are net of all
+  fees (each sale is charged its own fee plus a proportional share of the
+  entry fees) and slippage — a trade that only wins gross of costs counts
+  as a loss.
+
+### Notifications
+
+Set `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` (via
+[@BotFather](https://t.me/BotFather)) and/or `DISCORD_WEBHOOK_URL` in `.env`.
+The bot then pushes: order fills, stop-loss/take-profit triggers, drawdown
+circuit-breaker trips and recoveries, WebSocket disconnect/reconnect events
+(throttled to avoid storms), a startup banner, and a PnL digest every
+`DIGEST_INTERVAL_HOURS`. The dashboard's **Control & Settings** tab has a
+*Send test notification* button to verify the setup.
 
 ### Going live (not recommended until thoroughly paper-tested)
 

@@ -77,7 +77,8 @@ async def test_balances_roundtrip(db: Database) -> None:
 async def test_position_roundtrip(db: Database) -> None:
     position = Position(
         symbol="BTC/EUR", amount=0.25, entry_price=40_000.0,
-        realized_pnl=12.5, stop_loss=39_200.0, take_profit=41_600.0,
+        realized_pnl=12.5, entry_fees=15.0,
+        stop_loss=39_200.0, take_profit=41_600.0,
     )
     await db.upsert_position(position)
     loaded = await db.load_positions()
@@ -85,6 +86,7 @@ async def test_position_roundtrip(db: Database) -> None:
     assert restored.amount == pytest.approx(0.25)
     assert restored.entry_price == pytest.approx(40_000.0)
     assert restored.realized_pnl == pytest.approx(12.5)
+    assert restored.entry_fees == pytest.approx(15.0)
     assert restored.stop_loss == pytest.approx(39_200.0)
     assert restored.take_profit == pytest.approx(41_600.0)
 
