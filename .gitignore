@@ -22,6 +22,12 @@ htmlcov/
 logs/
 *.log
 
+# Runtime state
+data/
+*.db
+*.db-wal
+*.db-shm
+
 # IDE
 .idea/
 .vscode/

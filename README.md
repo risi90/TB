@@ -25,19 +25,29 @@ management.
 - 📈 **Strategies** — pluggable via an abstract `BaseStrategy`
   (`on_ticker`, `on_orderbook`, `generate_signals`), with a robust
   **grid trading** strategy and a simple **SMA crossover** included.
-- 📝 **Structured logging** via `loguru`: live ticks, simulated fills, and a
-  periodic PnL summary.
+- 💾 **SQLite persistence** (`aiosqlite`) — balances, positions, orders, grid
+  levels, and the equity curve survive restarts; the grid resumes exactly
+  where it left off.
+- 🖥️ **Streamlit dashboard** — live metrics, start/pause/stop control,
+  runtime setting changes (no restart), portfolio & order tables, equity and
+  grid-level Plotly charts, and a live log viewer.
+- 🧹 **Graceful shutdown** — SIGINT/SIGTERM flush all state to SQLite, close
+  WebSockets and the database, and exit with code 0.
+- 📝 **Structured logging** via `loguru`: live ticks, simulated fills, a
+  periodic PnL summary, and a rotating log file for the dashboard.
 
 ## Project layout
 
 ```
 config/       Settings via pydantic-settings + .env
 connectors/   Exchange abstraction + ccxt.pro connector (Bitvavo, Kraken)
+dashboard/    Streamlit web dashboard (reads/writes the SQLite database)
 engine/       Domain models, paper trading engine, execution router
+storage/      Async SQLite layer, engine persistence, runtime config sync
 strategies/   BaseStrategy, grid trading, SMA crossover
 risk/         RiskManager (allocation, drawdown, SL/TP enforcement)
-utils/        loguru logging setup, exponential backoff helper
-tests/        pytest unit tests (paper fills, risk, strategy signals)
+utils/        loguru logging setup, graceful shutdown, backoff helper
+tests/        pytest unit tests (fills, risk, signals, persistence, config)
 main.py       Async entry point
 ```
 
@@ -51,9 +61,30 @@ pip install -r requirements.txt
 # 2. Configure
 cp .env.example .env        # defaults are safe: paper mode, BTC/EUR on Bitvavo
 
-# 3. Run (no API keys needed for paper trading — market data is public)
+# 3. Run the bot (no API keys needed for paper trading — market data is public)
 python main.py
+
+# 4. In a second terminal: run the web dashboard
+streamlit run dashboard/app.py
 ```
+
+The bot and the dashboard are **separate processes** that communicate through
+the SQLite database (`data/bot_state.db` by default):
+
+- `python main.py` runs the trading loop, streams market data, and persists
+  every state change (orders, fills, balances, grid levels, equity curve).
+- `streamlit run dashboard/app.py` serves the web UI (default
+  http://localhost:8501). It reads state directly from SQLite and writes
+  runtime settings / start-pause-stop commands into the `bot_config` table,
+  which the bot picks up within `CONFIG_POLL_INTERVAL` seconds — no restart
+  required. Settings saved in the dashboard also survive bot restarts and
+  take precedence over `.env` for the managed keys.
+
+Stopping: press `Ctrl-C` in the bot terminal or use the dashboard's **Stop**
+button — either way the bot stops taking entries, flushes all in-memory state
+to SQLite, closes WebSockets and the database, and exits with code 0. On the
+next start it rehydrates balances, positions, resting orders, and the active
+grid, and continues seamlessly.
 
 You'll see live ticks, simulated order fills, and periodic PnL summaries:
 
@@ -78,6 +109,13 @@ All settings live in `.env` (see `.env.example` for the full list):
 | `MAX_ALLOCATION_PCT` | `0.10` | Max fraction of equity per order |
 | `MAX_DRAWDOWN_PCT` | `0.15` | Drawdown from peak equity that blocks new entries |
 | `STOP_LOSS_PCT` / `TAKE_PROFIT_PCT` | `0.02` / `0.04` | Mandatory protective levels on entries |
+| `DB_PATH` | `data/bot_state.db` | SQLite database shared with the dashboard |
+| `CONFIG_POLL_INTERVAL` | `5` | Seconds between runtime-config polls |
+| `LOG_FILE` | `logs/bot.log` | Rotating log file (dashboard Live Logs tab) |
+
+Symbols, grid parameters, and risk limits can also be changed at runtime from
+the dashboard's **Control & Settings** tab; changing the exchange requires a
+bot restart.
 
 ### Going live (not recommended until thoroughly paper-tested)
 
@@ -115,6 +153,26 @@ TradingApp.handle_ticker
 - Buys reserve quote funds (including worst-case fee) at placement; sells
   reserve base — the simulated account can never double-spend.
 
+### Persistence & the dashboard
+
+All durable state lives in one SQLite database (WAL mode, so the dashboard
+reads while the bot writes):
+
+| Table | Contents |
+|---|---|
+| `bot_config` | Live-adjustable settings, bot status, heartbeat, last prices |
+| `positions` | Per-symbol position snapshots incl. SL/TP levels |
+| `orders` | Full order history; open rows are rehydrated on startup |
+| `grid_state` | Serialized grid rungs, order bindings, and cycle counts |
+| `account_balances` | Free/reserved funds per currency |
+| `equity_history` | Timestamped equity / realized / unrealized PnL curve |
+
+On startup the bot seeds `bot_config` with its settings (without overwriting
+dashboard edits), applies any stored overrides, restores the account and open
+orders into the paper engine, and rehydrates each grid strategy — repairing
+levels whose orders no longer exist and discarding state whose grid
+configuration changed.
+
 ## Testing
 
 ```bash
@@ -124,8 +182,10 @@ pytest -v
 
 The test suite covers paper fills (market/limit, maker/taker fees, fund
 reservation, PnL), risk manager limits (allocation, drawdown circuit breaker,
-mandatory SL/TP), strategy signals (grid lifecycle, SMA crossovers), and the
-live-trading hardblock.
+mandatory SL/TP), strategy signals (grid lifecycle, SMA crossovers), the
+live-trading hardblock, persistence (schema, state saving, engine and grid
+rehydration after simulated restarts), and runtime config sync through the
+database.
 
 ## Extending
 

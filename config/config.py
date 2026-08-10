@@ -28,6 +28,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
+        validate_assignment=True,
     )
 
     # --- Safety ---------------------------------------------------------
@@ -69,8 +70,15 @@ class Settings(BaseSettings):
     max_open_orders: int = Field(default=10, ge=1)
     min_order_notional: float = Field(default=5.0, ge=0)
 
+    # --- Persistence ----------------------------------------------------
+    db_path: str = "data/bot_state.db"
+    config_poll_interval: float = Field(default=5.0, gt=0)
+    equity_snapshot_interval: float = Field(default=30.0, gt=0)
+    heartbeat_interval: float = Field(default=5.0, gt=0)
+
     # --- Logging --------------------------------------------------------
     log_level: str = "INFO"
+    log_file: str = "logs/bot.log"
     pnl_summary_interval: float = Field(default=30.0, gt=0)
 
     @field_validator("symbols", mode="before")

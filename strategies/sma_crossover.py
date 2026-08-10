@@ -127,3 +127,7 @@ class SmaCrossoverStrategy(BaseStrategy):
             self._position_amount += order.filled
         else:
             self._position_amount = max(0.0, self._position_amount - order.filled)
+
+    def sync_position(self, amount: float) -> None:
+        """Seed the tracked position, e.g. from a restored engine position."""
+        self._position_amount = max(0.0, amount)

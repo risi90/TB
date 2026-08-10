@@ -43,6 +43,7 @@ class _GridLevel:
     buy_order_id: str | None = None
     sell_order_id: str | None = None
     amount: float = 0.0
+    cycles: int = 0
 
 
 class GridTradingStrategy(BaseStrategy):
@@ -73,11 +74,22 @@ class GridTradingStrategy(BaseStrategy):
         self._anchor_price: float | None = None
         self._grid: list[_GridLevel] = []
         self._pending_requests: list[OrderRequest] = []
+        self._total_cycles = 0
+
+    @property
+    def strategy_id(self) -> str:
+        """Stable persistence identifier, e.g. ``"grid:BTC/EUR"``."""
+        return f"grid:{self.symbol}"
 
     @property
     def grid(self) -> list[_GridLevel]:
         """The current grid levels (read-only view for tests / inspection)."""
         return self._grid
+
+    @property
+    def total_cycles(self) -> int:
+        """Completed buy→sell grid cycles across all levels."""
+        return self._total_cycles
 
     # ------------------------------------------------------------------
     # Market data
@@ -117,9 +129,11 @@ class GridTradingStrategy(BaseStrategy):
                 )
                 return
             if order.side is OrderSide.SELL and order.id == level.sell_order_id:
+                level.cycles += 1
+                self._total_cycles += 1
                 logger.info(
-                    "[{}] grid cycle complete @ level {:.2f} -> {:.2f}",
-                    self.name, level.buy_price, level.sell_price,
+                    "[{}] grid cycle #{} complete @ level {:.2f} -> {:.2f}",
+                    self.name, self._total_cycles, level.buy_price, level.sell_price,
                 )
                 level.state = _LevelState.IDLE
                 level.buy_order_id = None
@@ -161,6 +175,121 @@ class GridTradingStrategy(BaseStrategy):
             ):
                 level.state = _LevelState.IDLE
                 return
+
+    # ------------------------------------------------------------------
+    # State persistence
+    # ------------------------------------------------------------------
+    def to_state(self) -> tuple[dict[str, object], list[dict[str, object]]]:
+        """Serialize the grid for persistence.
+
+        Returns:
+            ``(config, levels)`` — the grid's configuration (including anchor
+            price and cycle totals) and one dict per level, both
+            JSON-serializable.
+        """
+        config: dict[str, object] = {
+            "levels": self._levels_count,
+            "spacing_pct": self._spacing_pct,
+            "order_quote_size": self._order_quote_size,
+            "anchor_price": self._anchor_price,
+            "total_cycles": self._total_cycles,
+        }
+        levels: list[dict[str, object]] = [
+            {
+                "buy_price": level.buy_price,
+                "sell_price": level.sell_price,
+                "state": level.state.name,
+                "buy_order_id": level.buy_order_id,
+                "sell_order_id": level.sell_order_id,
+                "amount": level.amount,
+                "cycles": level.cycles,
+            }
+            for level in self._grid
+        ]
+        return config, levels
+
+    def matches_config(self, config: dict[str, object]) -> bool:
+        """Whether a persisted config is compatible with this instance's
+        parameters (level count, spacing, and order size all unchanged)."""
+        try:
+            return (
+                int(config["levels"]) == self._levels_count  # type: ignore[arg-type]
+                and float(config["spacing_pct"]) == self._spacing_pct  # type: ignore[arg-type]
+                and float(config["order_quote_size"]) == self._order_quote_size  # type: ignore[arg-type]
+            )
+        except (KeyError, TypeError, ValueError):
+            return False
+
+    def restore_state(
+        self,
+        config: dict[str, object],
+        levels: list[dict[str, object]],
+        open_order_ids: set[str] | None = None,
+    ) -> None:
+        """Rehydrate the grid from persisted state after a restart.
+
+        Args:
+            config: The persisted config from :meth:`to_state`.
+            levels: The persisted level dicts from :meth:`to_state`.
+            open_order_ids: Ids of orders actually still open in the engine.
+                Levels referencing orders that no longer exist are repaired:
+                a lost buy resets the level to IDLE (re-armed next tick); a
+                lost sell for held inventory is re-queued.
+        """
+        anchor = config.get("anchor_price")
+        if anchor is None:
+            logger.warning("[{}] persisted grid has no anchor; rebuilding fresh", self.name)
+            return
+        self._anchor_price = float(anchor)  # type: ignore[arg-type]
+        self._total_cycles = int(config.get("total_cycles", 0))  # type: ignore[arg-type]
+        self._grid = []
+        for row in levels:
+            level = _GridLevel(
+                buy_price=float(row["buy_price"]),  # type: ignore[arg-type]
+                sell_price=float(row["sell_price"]),  # type: ignore[arg-type]
+                state=_LevelState[str(row["state"])],
+                buy_order_id=(
+                    str(row["buy_order_id"]) if row.get("buy_order_id") else None
+                ),
+                sell_order_id=(
+                    str(row["sell_order_id"]) if row.get("sell_order_id") else None
+                ),
+                amount=float(row.get("amount") or 0.0),  # type: ignore[arg-type]
+                cycles=int(row.get("cycles") or 0),  # type: ignore[arg-type]
+            )
+            if open_order_ids is not None:
+                self._repair_level(level, open_order_ids)
+            self._grid.append(level)
+        logger.info(
+            "[{}] grid restored: anchor {:.2f}, {} levels, {} cycles completed",
+            self.name, self._anchor_price, len(self._grid), self._total_cycles,
+        )
+
+    def _repair_level(self, level: _GridLevel, open_order_ids: set[str]) -> None:
+        """Fix levels whose persisted orders are no longer open in the engine."""
+        if level.state is _LevelState.BUY_PENDING and (
+            level.buy_order_id is None or level.buy_order_id not in open_order_ids
+        ):
+            level.state = _LevelState.IDLE
+            level.buy_order_id = None
+        elif level.state is _LevelState.SELL_PENDING and (
+            level.sell_order_id is None or level.sell_order_id not in open_order_ids
+        ):
+            level.sell_order_id = None
+            if level.amount > 0:
+                # Inventory is held but its sell order vanished — re-queue it.
+                self._pending_requests.append(
+                    OrderRequest(
+                        symbol=self.symbol,
+                        side=OrderSide.SELL,
+                        type=OrderType.LIMIT,
+                        amount=level.amount,
+                        price=level.sell_price,
+                        reduce_only=True,
+                    )
+                )
+            else:
+                level.state = _LevelState.IDLE
 
     # ------------------------------------------------------------------
     # Internals

@@ -144,6 +144,49 @@ class PaperEngine:
         """Most recent ticker seen for ``symbol``, if any."""
         return self._last_tickers.get(symbol)
 
+    def last_prices(self) -> dict[str, float]:
+        """Last traded price per symbol, for heartbeats and dashboards."""
+        return {symbol: t.last for symbol, t in self._last_tickers.items()}
+
+    # ------------------------------------------------------------------
+    # State restore (persistence support)
+    # ------------------------------------------------------------------
+    def restore_state(
+        self,
+        balances: dict[str, Balance],
+        positions: dict[str, Position],
+        open_orders: list[Order],
+    ) -> None:
+        """Rehydrate a previously persisted account snapshot.
+
+        The provided balances already reflect the funds locked by
+        ``open_orders`` (persisted as free + reserved), so reservations are
+        re-recorded for bookkeeping **without** deducting from the available
+        balance again. Reservation sizes are recomputed deterministically
+        (buys: ``amount * price * (1 + taker_fee)``, sells: ``amount``).
+        """
+        self.balances = dict(balances)
+        self.positions = dict(positions)
+        self.open_orders = {}
+        self._reservations = {}
+        for order in open_orders:
+            if not order.is_open:
+                continue
+            base, quote = split_symbol(order.symbol)
+            if order.side is OrderSide.BUY:
+                if order.price is None:
+                    logger.warning(
+                        "Skipping restore of open buy {} without price", order.id
+                    )
+                    continue
+                amount = order.amount * order.price * (1.0 + self.taker_fee_rate)
+                self._reservations[order.id] = _Reservation(currency=quote, amount=amount)
+            else:
+                self._reservations[order.id] = _Reservation(
+                    currency=base, amount=order.amount
+                )
+            self.open_orders[order.id] = order
+
     # ------------------------------------------------------------------
     # Order lifecycle
     # ------------------------------------------------------------------

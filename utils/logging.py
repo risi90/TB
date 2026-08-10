@@ -14,11 +14,18 @@ _FORMAT = (
 )
 
 
-def setup_logging(level: str = "INFO") -> None:
-    """Configure the global loguru logger for clean console output.
+_FILE_FORMAT = (
+    "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name} | {message}"
+)
+
+
+def setup_logging(level: str = "INFO", log_file: str | None = None) -> None:
+    """Configure the global loguru logger for console and optional file output.
 
     Args:
         level: Minimum log level (e.g. ``"DEBUG"``, ``"INFO"``).
+        log_file: Optional path for a rotating plain-text log file; the
+            dashboard's *Live Logs* tab tails this file.
     """
     logger.remove()
     logger.add(
@@ -30,3 +37,14 @@ def setup_logging(level: str = "INFO") -> None:
         diagnose=False,
         enqueue=True,
     )
+    if log_file:
+        logger.add(
+            log_file,
+            level=level.upper(),
+            format=_FILE_FORMAT,
+            rotation="10 MB",
+            retention=5,
+            backtrace=False,
+            diagnose=False,
+            enqueue=True,
+        )

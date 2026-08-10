@@ -30,6 +30,12 @@ class BaseStrategy(ABC):
         """Human-readable strategy name for logging."""
         return type(self).__name__
 
+    @property
+    def strategy_id(self) -> str:
+        """Stable identifier used to persist and attribute this strategy's
+        orders and state (e.g. ``"gridtradingstrategy:BTC/EUR"``)."""
+        return f"{type(self).__name__.lower()}:{self.symbol}"
+
     @abstractmethod
     async def on_ticker(self, ticker: Ticker) -> None:
         """Consume a real-time ticker update for :attr:`symbol`."""
