@@ -1,0 +1,6 @@
+{
+  "$comment": "This repository is not a Vercel app (Python trading bot, deployed on Render). Disable Vercel-for-GitHub auto-deployments so commits stop getting failed deployment statuses.",
+  "github": {
+    "enabled": false
+  }
+}

@@ -249,6 +249,29 @@ docker compose up -d --build    # rebuild after pulling new code
 docker compose down             # stop and remove containers (state persists)
 ```
 
+## Deploying to Render
+
+The repo includes a Render Blueprint (`render.yaml`). In the Render
+dashboard choose **New → Blueprint**, connect this repository, and accept the
+plan — you'll be prompted for the secret values (`API_KEY`, webhook tokens…).
+
+- The bot and dashboard run as **one web service** (`scripts/start_render.sh`
+  starts the bot in the background and binds Streamlit to `$PORT`): they
+  share state through a single SQLite file, and Render persistent disks
+  attach to exactly one service.
+- A 1 GB disk is mounted at `/var/data`; `DB_PATH` and `LOG_FILE` point
+  there, so all state survives deploys and restarts.
+- On deploys/restarts Render sends SIGTERM, which the script forwards to the
+  bot first so it flushes state to SQLite before the dashboard stops.
+- `PAPER_TRADING=True` is set in the blueprint; keep it that way until
+  you've explicitly decided otherwise.
+
+Note: `vercel.json` sets `"github": {"enabled": false}` — this project is
+not a Vercel app, and that flag stops Vercel-for-GitHub from attempting (and
+failing) a deployment on every commit. If a Vercel project is still linked
+to the repo, deleting it in the Vercel dashboard removes the integration
+entirely.
+
 ## Continuous Integration
 
 `.github/workflows/ci.yml` runs the full pytest suite on every push and pull
