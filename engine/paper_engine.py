@@ -89,11 +89,16 @@ class PaperEngine:
         balances: Initial funds per currency, e.g. ``{"EUR": 10_000.0}``.
         maker_fee_rate: Fee fraction charged on resting limit fills.
         taker_fee_rate: Fee fraction charged on market / crossing fills.
+        slippage_rate: Adverse price impact applied to market executions
+            (buys fill at ``ask * (1 + slippage)``, sells at
+            ``bid * (1 - slippage)``). Limit orders are price-protected and
+            never slip. Defaults to 0 (used by backtests for realism).
     """
 
     balances: dict[str, Balance]
     maker_fee_rate: float = 0.0015
     taker_fee_rate: float = 0.0025
+    slippage_rate: float = 0.0
 
     open_orders: dict[str, Order] = field(default_factory=dict)
     closed_orders: list[Order] = field(default_factory=list)
@@ -109,6 +114,7 @@ class PaperEngine:
         starting_balances: dict[str, float],
         maker_fee_rate: float = 0.0015,
         taker_fee_rate: float = 0.0025,
+        slippage_rate: float = 0.0,
     ) -> "PaperEngine":
         """Build an engine from plain ``{currency: amount}`` starting funds."""
         return cls(
@@ -118,6 +124,7 @@ class PaperEngine:
             },
             maker_fee_rate=maker_fee_rate,
             taker_fee_rate=taker_fee_rate,
+            slippage_rate=slippage_rate,
         )
 
     # ------------------------------------------------------------------
@@ -143,6 +150,49 @@ class PaperEngine:
     def last_ticker(self, symbol: str) -> Ticker | None:
         """Most recent ticker seen for ``symbol``, if any."""
         return self._last_tickers.get(symbol)
+
+    def last_prices(self) -> dict[str, float]:
+        """Last traded price per symbol, for heartbeats and dashboards."""
+        return {symbol: t.last for symbol, t in self._last_tickers.items()}
+
+    # ------------------------------------------------------------------
+    # State restore (persistence support)
+    # ------------------------------------------------------------------
+    def restore_state(
+        self,
+        balances: dict[str, Balance],
+        positions: dict[str, Position],
+        open_orders: list[Order],
+    ) -> None:
+        """Rehydrate a previously persisted account snapshot.
+
+        The provided balances already reflect the funds locked by
+        ``open_orders`` (persisted as free + reserved), so reservations are
+        re-recorded for bookkeeping **without** deducting from the available
+        balance again. Reservation sizes are recomputed deterministically
+        (buys: ``amount * price * (1 + taker_fee)``, sells: ``amount``).
+        """
+        self.balances = dict(balances)
+        self.positions = dict(positions)
+        self.open_orders = {}
+        self._reservations = {}
+        for order in open_orders:
+            if not order.is_open:
+                continue
+            base, quote = split_symbol(order.symbol)
+            if order.side is OrderSide.BUY:
+                if order.price is None:
+                    logger.warning(
+                        "Skipping restore of open buy {} without price", order.id
+                    )
+                    continue
+                amount = order.amount * order.price * (1.0 + self.taker_fee_rate)
+                self._reservations[order.id] = _Reservation(currency=quote, amount=amount)
+            else:
+                self._reservations[order.id] = _Reservation(
+                    currency=base, amount=order.amount
+                )
+            self.open_orders[order.id] = order
 
     # ------------------------------------------------------------------
     # Order lifecycle
@@ -180,7 +230,10 @@ class PaperEngine:
         fills: list[Fill] = []
         if order.type is OrderType.MARKET:
             assert ticker is not None
-            price = ticker.ask if order.side is OrderSide.BUY else ticker.bid
+            if order.side is OrderSide.BUY:
+                price = ticker.ask * (1.0 + self.slippage_rate)
+            else:
+                price = ticker.bid * (1.0 - self.slippage_rate)
             fills.append(self._fill_order(order, price, self.taker_fee_rate))
         elif ticker is not None and order.price is not None:
             # A limit order that crosses the current book executes as taker.
@@ -227,7 +280,8 @@ class PaperEngine:
         return total
 
     def realized_pnl(self) -> float:
-        """Sum of realized PnL across all positions (fees not deducted)."""
+        """Sum of **net** realized PnL across all positions (fees deducted:
+        each sale's fee plus the proportional entry fees of the closed amount)."""
         return sum(p.realized_pnl for p in self.positions.values())
 
     def unrealized_pnl(self) -> float:
@@ -267,7 +321,7 @@ class PaperEngine:
                 reference = order.price
             else:
                 assert ticker is not None
-                reference = ticker.ask
+                reference = ticker.ask * (1.0 + self.slippage_rate)
             required = order.amount * reference * (1.0 + self.taker_fee_rate)
             self._balance(quote).reserve(required)
             self._reservations[order.id] = _Reservation(currency=quote, amount=required)
@@ -315,15 +369,15 @@ class PaperEngine:
 
         position = self.positions.setdefault(order.symbol, Position(symbol=order.symbol))
         if order.side is OrderSide.BUY:
-            position.apply_buy(amount, price)
+            position.apply_buy(amount, price, fee=fee)
             if order.stop_loss is not None:
                 position.stop_loss = order.stop_loss
             if order.take_profit is not None:
                 position.take_profit = order.take_profit
         else:
-            realized = position.apply_sell(amount, price)
+            realized = position.apply_sell(amount, price, fee=fee)
             logger.info(
-                "Realized PnL {:+.2f} {} on {} (sold {:.8f} @ {:.2f})",
+                "Realized net PnL {:+.2f} {} on {} (sold {:.8f} @ {:.2f}, fees incl.)",
                 realized, quote, order.symbol, amount, price,
             )
 

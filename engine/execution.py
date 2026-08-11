@@ -14,11 +14,11 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 
-from config.config import Settings
 from engine.models import Fill, Order, OrderRequest
 from engine.paper_engine import PaperEngine
 
 if TYPE_CHECKING:
+    from config.config import Settings
     from connectors.base import BaseConnector
 
 
@@ -38,7 +38,7 @@ class ExecutionRouter:
 
     def __init__(
         self,
-        settings: Settings,
+        settings: "Settings",
         paper_engine: PaperEngine,
         connector: "BaseConnector | None" = None,
     ) -> None:

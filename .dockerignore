@@ -1,0 +1,24 @@
+# VCS / CI
+.git
+.github
+
+# Secrets (compose injects .env via env_file, not the image)
+.env
+
+# Runtime state and logs (bind-mounted volumes, never baked into the image)
+data/
+logs/
+
+# Python cruft
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE
+.idea/
+.vscode/

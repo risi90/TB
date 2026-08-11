@@ -149,37 +149,57 @@ class Order:
 
 @dataclass(slots=True)
 class Position:
-    """A long position in one symbol with running PnL bookkeeping."""
+    """A long position in one symbol with running **net** PnL bookkeeping.
+
+    ``realized_pnl`` is net of trading costs: each sale's gross PnL is
+    reduced by the sell fee and a proportional share of the fees paid to
+    build the position (``entry_fees``). Slippage is already embedded in
+    fill prices. ``unrealized_pnl`` stays gross (mark-to-market before any
+    exit costs).
+    """
 
     symbol: str
     amount: float = 0.0
     entry_price: float = 0.0
     realized_pnl: float = 0.0
+    entry_fees: float = 0.0
     stop_loss: float | None = None
     take_profit: float | None = None
 
     def unrealized_pnl(self, last_price: float) -> float:
-        """Mark-to-market PnL of the open amount at ``last_price``."""
+        """Mark-to-market PnL of the open amount at ``last_price`` (gross)."""
         if self.amount <= 0:
             return 0.0
         return (last_price - self.entry_price) * self.amount
 
-    def apply_buy(self, amount: float, price: float) -> None:
-        """Increase the position, updating the weighted-average entry price."""
+    def apply_buy(self, amount: float, price: float, fee: float = 0.0) -> None:
+        """Increase the position, updating the weighted-average entry price
+        and accumulating the entry fee for later net-PnL attribution."""
         total = self.amount + amount
         if total > 0:
             self.entry_price = (self.amount * self.entry_price + amount * price) / total
         self.amount = total
+        self.entry_fees += fee
 
-    def apply_sell(self, amount: float, price: float) -> float:
-        """Reduce the position and return the realized PnL of this sale."""
+    def apply_sell(self, amount: float, price: float, fee: float = 0.0) -> float:
+        """Reduce the position and return the **net** realized PnL of this sale.
+
+        Net PnL = gross PnL − ``fee`` (the sell's own fee) − the
+        proportional share of accumulated entry fees for the closed amount.
+        """
         closed = min(amount, self.amount)
-        pnl = (price - self.entry_price) * closed
-        self.realized_pnl += pnl
+        gross = (price - self.entry_price) * closed
+        entry_fee_share = (
+            self.entry_fees * (closed / self.amount) if self.amount > 0 else 0.0
+        )
+        self.entry_fees -= entry_fee_share
+        net = gross - entry_fee_share - fee
+        self.realized_pnl += net
         self.amount -= closed
         if self.amount <= 1e-12:
             self.amount = 0.0
             self.entry_price = 0.0
+            self.entry_fees = 0.0
             self.stop_loss = None
             self.take_profit = None
-        return pnl
+        return net

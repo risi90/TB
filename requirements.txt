@@ -4,6 +4,14 @@ pydantic>=2.7
 pydantic-settings>=2.2
 loguru>=0.7.2
 
+# Persistence
+aiosqlite>=0.20
+
+# Dashboard
+streamlit>=1.49
+plotly>=5.22
+pandas>=2.2
+
 # Testing
 pytest>=8.0
 pytest-asyncio>=0.23

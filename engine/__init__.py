@@ -1,5 +1,6 @@
 """Trading engine package: order models, paper engine, and execution router."""
 
+from engine.candle_aggregator import Bar, CandleAggregator
 from engine.models import (
     Fill,
     Order,
@@ -15,6 +16,8 @@ from engine.paper_engine import InsufficientFunds, PaperEngine
 from engine.execution import ExecutionRouter, LiveTradingBlocked
 
 __all__ = [
+    "Bar",
+    "CandleAggregator",
     "ExecutionRouter",
     "Fill",
     "InsufficientFunds",
