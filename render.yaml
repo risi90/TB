@@ -1,0 +1,53 @@
+# Render Blueprint: deploy the trading bot + dashboard as one web service.
+#
+# Why one service? The bot and the Streamlit dashboard share state through a
+# single SQLite database file, and Render persistent disks attach to exactly
+# one service — so both processes run in the same service via
+# scripts/start_render.sh (bot in the background, Streamlit bound to $PORT).
+#
+# Deploy: Render dashboard -> New -> Blueprint -> connect this repository.
+# Secrets marked `sync: false` are prompted for in the Render dashboard.
+services:
+  - type: web
+    name: tb-trading-bot
+    runtime: python
+    plan: starter          # persistent disks require a paid instance type
+    buildCommand: pip install -r requirements.txt
+    startCommand: bash scripts/start_render.sh
+    autoDeploy: true
+    healthCheckPath: /
+    disk:
+      name: bot-state
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      # --- persistence on the mounted disk (survives deploys/restarts) ----
+      - key: DB_PATH
+        value: /var/data/bot_state.db
+      - key: LOG_FILE
+        value: /var/data/logs/bot.log
+      # --- safety ---------------------------------------------------------
+      - key: PAPER_TRADING
+        value: "True"
+      # --- market / strategy ---------------------------------------------
+      - key: EXCHANGE
+        value: bitvavo
+      - key: SYMBOLS
+        value: BTC/EUR
+      - key: STRATEGY
+        value: grid
+      - key: BAR_TIMEFRAME
+        value: 1m
+      # --- secrets (set values in the Render dashboard) -------------------
+      - key: API_KEY
+        sync: false
+      - key: API_SECRET
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: DISCORD_WEBHOOK_URL
+        sync: false
