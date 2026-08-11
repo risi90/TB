@@ -120,6 +120,17 @@ async def test_bot_status_transitions_reported(
     assert sync.bot_status == "stopped"
 
 
+def test_symbols_parse_from_real_environment_variable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Plain comma-separated SYMBOLS must work as an actual env var (Docker
+    env_file), not only via .env files — pydantic-settings would otherwise
+    JSON-decode the list field at the source level and crash."""
+    monkeypatch.setenv("SYMBOLS", "BTC/EUR,ETH/EUR")
+    settings = Settings(_env_file=None)
+    assert settings.symbols == ["BTC/EUR", "ETH/EUR"]
+
+
 # ---------------------------------------------------------------------------
 # Fee floor enforcement
 # ---------------------------------------------------------------------------

@@ -11,10 +11,10 @@ truth consulted by the execution router before any real order leaves the bot.
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from engine.candle_aggregator import TIMEFRAMES_MS
 
@@ -45,7 +45,12 @@ class Settings(BaseSettings):
     api_secret: str = ""
 
     # --- Market ---------------------------------------------------------
-    symbols: list[str] = Field(default_factory=lambda: ["BTC/EUR"])
+    # NoDecode: keep pydantic-settings from JSON-parsing the env value so
+    # plain `SYMBOLS=BTC/EUR,ETH/EUR` works from real environment variables
+    # (e.g. docker compose env_file) as well as from .env files.
+    symbols: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["BTC/EUR"]
+    )
     quote_currency: str = "EUR"
 
     # --- Paper trading --------------------------------------------------

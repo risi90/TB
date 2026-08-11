@@ -219,6 +219,43 @@ orders into the paper engine, and rehydrates each grid strategy — repairing
 levels whose orders no longer exist and discarding state whose grid
 configuration changed.
 
+## Running with Docker (24/7 operation)
+
+The repo ships a production `Dockerfile` and a `docker-compose.yml` that runs
+the bot and the dashboard as two auto-restarting services sharing one SQLite
+database:
+
+```bash
+cp .env.example .env    # configure first — compose loads it via env_file
+docker compose up -d    # build (first run) and start both services
+```
+
+- Dashboard: http://localhost:8501
+- `./data` (SQLite state + historical cache) and `./logs` (rotating log file
+  for the Live Logs tab) are bind-mounted, so all state persists on the host
+  across restarts, rebuilds, and image upgrades.
+- `restart: unless-stopped` brings both services back after crashes or host
+  reboots; `stop_grace_period: 30s` gives the bot's shutdown hooks time to
+  flush state to SQLite (it exits 0 on SIGTERM).
+
+Day-to-day:
+
+```bash
+docker compose logs -f          # follow logs from both services
+docker compose logs -f bot      # just the bot
+docker compose ps               # service status
+docker compose restart bot      # restart after changing .env
+docker compose up -d --build    # rebuild after pulling new code
+docker compose down             # stop and remove containers (state persists)
+```
+
+## Continuous Integration
+
+`.github/workflows/ci.yml` runs the full pytest suite on every push and pull
+request to `main`/`master` (Python 3.11, pip cache enabled). The workflow
+fails if any test fails; it can also be triggered manually from the Actions
+tab (`workflow_dispatch`).
+
 ## Backtesting
 
 Test a strategy on historical data before letting it trade — from the CLI:

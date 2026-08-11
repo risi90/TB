@@ -1,0 +1,45 @@
+# 24/7 containerized execution: trading bot + Streamlit dashboard.
+#
+#   cp .env.example .env      # configure first (compose requires .env)
+#   docker compose up -d      # start both services in the background
+#   docker compose logs -f    # follow logs
+#   docker compose down       # stop everything
+#
+# Both services share ./data (SQLite state + historical cache) and ./logs
+# (rotating log file shown in the dashboard's Live Logs tab) via bind
+# mounts, so state persists on the host across restarts and rebuilds.
+
+services:
+  bot:
+    build: .
+    image: tb-trading-bot
+    container_name: tb-bot
+    command: ["python", "main.py"]
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    # Give the graceful-shutdown callbacks time to flush state to SQLite.
+    stop_grace_period: 30s
+
+  dashboard:
+    build: .
+    image: tb-trading-bot
+    container_name: tb-dashboard
+    command:
+      [
+        "streamlit", "run", "dashboard/app.py",
+        "--server.port=8501",
+        "--server.address=0.0.0.0",
+        "--server.headless=true",
+      ]
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    depends_on:
+      - bot
