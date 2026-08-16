@@ -265,6 +265,10 @@ plan — you'll be prompted for the secret values (`API_KEY`, webhook tokens…)
   bot first so it flushes state to SQLite before the dashboard stops.
 - `PAPER_TRADING=True` is set in the blueprint; keep it that way until
   you've explicitly decided otherwise.
+- **Set `DASHBOARD_PASSWORD`** (service → Environment): the dashboard can
+  start/stop the bot and change its settings, and a Render URL is public.
+  With the variable set, the dashboard shows a login screen; empty means no
+  lock (intended for localhost use only).
 
 Note: `vercel.json` sets `"github": {"enabled": false}` — this project is
 not a Vercel app, and that flag stops Vercel-for-GitHub from attempting (and

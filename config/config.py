@@ -87,6 +87,12 @@ class Settings(BaseSettings):
     max_open_orders: int = Field(default=10, ge=1)
     min_order_notional: float = Field(default=5.0, ge=0)
 
+    # --- Dashboard ------------------------------------------------------
+    dashboard_password: str = Field(
+        default="",
+        description="Password gate for the Streamlit dashboard; empty = no lock.",
+    )
+
     # --- Notifications --------------------------------------------------
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
