@@ -20,6 +20,7 @@ from backtester.metrics import BacktestMetrics, compute_metrics
 from backtester.models import TIMEFRAMES_MS, BacktestResult
 from strategies.base import BaseStrategy
 from strategies.grid_trading import GridTradingStrategy
+from strategies.regime import RegimeFilter
 from strategies.sma_crossover import SmaCrossoverStrategy
 from utils.logging import setup_logging
 
@@ -57,6 +58,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Grid only: use the legacy per-entry stop-loss instead of the "
         "grid-aligned stop below the whole grid",
     )
+    parser.add_argument(
+        "--no-regime-filter", action="store_true",
+        help="Grid only: keep buying during detected downtrends",
+    )
     parser.add_argument("--cache-dir", default="data/historical")
     parser.add_argument("--output", default=None, help="Optional CSV path for the trade history")
     return parser
@@ -72,6 +77,7 @@ def _build_strategy(args: argparse.Namespace) -> BaseStrategy:
             aligned_protection=not args.per_entry_sl,
             stop_loss_buffer_pct=args.stop_loss,
             take_profit_buffer_pct=args.take_profit,
+            regime_filter=None if args.no_regime_filter else RegimeFilter(),
         )
     return SmaCrossoverStrategy(
         symbol=args.symbol,

@@ -14,6 +14,7 @@ from enum import Enum, auto
 
 from loguru import logger
 
+from engine.candle_aggregator import Bar
 from engine.models import (
     Order,
     OrderBook,
@@ -23,6 +24,7 @@ from engine.models import (
     Ticker,
 )
 from strategies.base import BaseStrategy
+from strategies.regime import Regime, RegimeFilter
 
 
 class _LevelState(Enum):
@@ -79,6 +81,12 @@ class GridTradingStrategy(BaseStrategy):
             stamps its per-entry defaults.
         stop_loss_buffer_pct: Distance of the stop below the lowest rung.
         take_profit_buffer_pct: Distance of the take-profit above the anchor.
+        regime_filter: Optional trend detector fed with completed bar closes
+            (``on_bar_close``). While it reports ``TRENDING_DOWN`` the grid
+            suspends new entries and cancels resting buys — a long-only grid
+            buying into a falling trend is its main way of losing money.
+            Sells (inventory management) always stay active. ``None`` (the
+            default) disables the filter.
     """
 
     def __init__(
@@ -93,6 +101,7 @@ class GridTradingStrategy(BaseStrategy):
         aligned_protection: bool = True,
         stop_loss_buffer_pct: float = 0.02,
         take_profit_buffer_pct: float = 0.04,
+        regime_filter: RegimeFilter | None = None,
     ) -> None:
         super().__init__(symbol)
         if levels < 1:
@@ -112,6 +121,7 @@ class GridTradingStrategy(BaseStrategy):
         self._aligned_protection = aligned_protection
         self._stop_loss_buffer_pct = stop_loss_buffer_pct
         self._take_profit_buffer_pct = take_profit_buffer_pct
+        self._regime_filter = regime_filter
         self._anchor_price: float | None = None
         self._grid: list[_GridLevel] = []
         self._pending_requests: list[OrderRequest] = []
@@ -165,6 +175,49 @@ class GridTradingStrategy(BaseStrategy):
 
     async def on_orderbook(self, orderbook: OrderBook) -> None:
         """Order book flow is not used by this strategy."""
+
+    async def on_bar_close(self, bar: Bar) -> None:
+        """Feed the regime filter and suspend/resume entries on transitions."""
+        if self._regime_filter is None:
+            return
+        before = self._regime_filter.regime
+        after = self._regime_filter.update(bar.close)
+        if after is before:
+            return
+        logger.info(
+            "[{}] regime {} -> {} (efficiency ratio {:.2f})",
+            self.name, before, after, self._regime_filter.efficiency_ratio,
+        )
+        if after is Regime.TRENDING_DOWN:
+            self._suspend_entries()
+
+    @property
+    def entries_allowed(self) -> bool:
+        """Whether new grid buys may be armed under the current regime."""
+        return (
+            self._regime_filter is None
+            or self._regime_filter.regime is not Regime.TRENDING_DOWN
+        )
+
+    def _suspend_entries(self) -> None:
+        """Cancel resting buys and drop queued entry requests (trend defense)."""
+        canceled = 0
+        for level in self._grid:
+            if level.state is _LevelState.BUY_PENDING:
+                if level.buy_order_id:
+                    self._pending_cancel_ids.append(level.buy_order_id)
+                    canceled += 1
+                level.state = _LevelState.IDLE
+                level.buy_order_id = None
+        self._pending_requests = [
+            r for r in self._pending_requests
+            if r.side is not OrderSide.BUY or r.reduce_only
+        ]
+        logger.warning(
+            "[{}] downtrend detected — entries suspended, {} resting buys "
+            "canceled (sells stay active)",
+            self.name, canceled,
+        )
 
     def generate_signals(self) -> list[OrderRequest]:
         """Emit queued grid orders exactly once each."""
@@ -457,6 +510,8 @@ class GridTradingStrategy(BaseStrategy):
         )
 
     def _arm_idle_levels(self) -> None:
+        if not self.entries_allowed:
+            return
         cap = self.inventory_cap_quote
         committed = self._committed_quote()
         stop_loss, take_profit = self._protective_levels()

@@ -75,6 +75,14 @@ class Settings(BaseSettings):
         description="Stop-loss below the whole grid instead of below each "
         "entry (per-entry stops turn normal grid dips into realized losses).",
     )
+    grid_regime_filter: bool = Field(
+        default=True,
+        description="Suspend new grid entries while the market trends down "
+        "(efficiency-ratio based); sells stay active.",
+    )
+    regime_window: int = Field(default=48, ge=5, le=500)
+    regime_enter_threshold: float = Field(default=0.35, gt=0, le=1)
+    regime_exit_threshold: float = Field(default=0.25, gt=0, le=1)
     grid_max_inventory_quote: float = Field(
         default=0.0, ge=0,
         description="Committed-capital cap in quote currency; 0 = one full grid.",
@@ -144,6 +152,14 @@ class Settings(BaseSettings):
         """Minimum profitable grid spacing: a completed cycle pays roughly two
         maker fees, plus a 0.1% safety margin for slippage and spread."""
         return 2.0 * self.maker_fee_rate + 0.001
+
+    @model_validator(mode="after")
+    def _regime_thresholds_ordered(self) -> "Settings":
+        if self.regime_exit_threshold >= self.regime_enter_threshold:
+            raise ValueError(
+                "regime_exit_threshold must be below regime_enter_threshold"
+            )
+        return self
 
     @model_validator(mode="after")
     def _grid_spacing_covers_fees(self) -> "Settings":

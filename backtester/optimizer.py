@@ -24,6 +24,7 @@ from backtester.engine import BacktestEngine
 from backtester.metrics import compute_metrics
 from backtester.models import Candle
 from strategies.grid_trading import GridTradingStrategy
+from strategies.regime import RegimeFilter
 
 #: Modules whose per-fill INFO logging would flood a sweep of many runs.
 _NOISY_MODULES = (
@@ -80,6 +81,7 @@ async def sweep_grid(
     taker_fee_rate: float = 0.0025,
     slippage_rate: float = 0.0005,
     aligned_protection: bool = True,
+    regime_filter: bool = True,
     train_fraction: float = 0.7,
     progress: ProgressCallback | None = None,
 ) -> list[SweepResult]:
@@ -139,6 +141,8 @@ async def sweep_grid(
                     order_quote_size=order_quote_size,
                     aligned_protection=aligned_protection,
                     stop_loss_buffer_pct=stop_loss,
+                    # Fresh (stateful) filter per run so windows stay independent.
+                    regime_filter=RegimeFilter() if regime_filter else None,
                 )
                 engine = BacktestEngine(
                     strategy=strategy,

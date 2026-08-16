@@ -32,6 +32,7 @@ from storage.db import Database
 from storage.persistence import PersistenceManager
 from strategies.base import BaseStrategy
 from strategies.grid_trading import GridTradingStrategy
+from strategies.regime import RegimeFilter
 from strategies.sma_crossover import SmaCrossoverStrategy
 from utils.lifecycle import ShutdownManager
 from utils.logging import setup_logging
@@ -57,6 +58,15 @@ def build_strategy(settings: Settings, symbol: str) -> BaseStrategy:
             aligned_protection=settings.grid_aligned_protection,
             stop_loss_buffer_pct=settings.stop_loss_pct,
             take_profit_buffer_pct=settings.take_profit_pct,
+            regime_filter=(
+                RegimeFilter(
+                    window=settings.regime_window,
+                    enter_threshold=settings.regime_enter_threshold,
+                    exit_threshold=settings.regime_exit_threshold,
+                )
+                if settings.grid_regime_filter
+                else None
+            ),
         )
     return SmaCrossoverStrategy(
         symbol=symbol,
