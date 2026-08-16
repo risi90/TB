@@ -155,6 +155,15 @@ class PaperEngine:
         """Last traded price per symbol, for heartbeats and dashboards."""
         return {symbol: t.last for symbol, t in self._last_tickers.items()}
 
+    def ticker_snapshot(self) -> dict[str, dict[str, float]]:
+        """Latest bid/ask/last (+ tick timestamp) per symbol, JSON-friendly."""
+        return {
+            symbol: {
+                "bid": t.bid, "ask": t.ask, "last": t.last, "timestamp": t.timestamp,
+            }
+            for symbol, t in self._last_tickers.items()
+        }
+
     # ------------------------------------------------------------------
     # State restore (persistence support)
     # ------------------------------------------------------------------

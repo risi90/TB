@@ -180,6 +180,73 @@ def render_header(cfg: dict[str, str]) -> None:
     m4.metric("Open Positions", len(positions))
 
 
+def render_price_widget(cfg: dict[str, str]) -> None:
+    """Live prices per symbol: last/bid/ask, 24h change, and a sparkline."""
+    try:
+        snapshot: dict[str, dict[str, float]] = json.loads(
+            cfg.get("ticker_snapshot", "{}")
+        )
+    except (ValueError, TypeError):
+        snapshot = {}
+    if not snapshot:  # bot on an older version or no ticks yet
+        prices = last_prices(cfg)
+        snapshot = {s: {"last": p, "bid": p, "ask": p, "timestamp": 0.0}
+                    for s, p in prices.items()}
+    if not snapshot:
+        return
+
+    day_ago = time.time() - 86_400
+    columns = st.columns(min(len(snapshot), 4))
+    for col, (symbol, tick) in zip(columns, sorted(snapshot.items())):
+        last = float(tick.get("last", 0.0))
+        ref = query_df(
+            "SELECT price FROM price_history WHERE symbol = ? AND timestamp >= ? "
+            "ORDER BY timestamp ASC LIMIT 1",
+            (symbol, day_ago),
+        )
+        delta = None
+        if not ref.empty and float(ref["price"].iloc[0]) > 0:
+            base = float(ref["price"].iloc[0])
+            delta = f"{100.0 * (last / base - 1.0):+.2f}% (24u)"
+        col.metric(f"💱 {symbol}", f"€{last:,.2f}", delta)
+        tick_ts = float(tick.get("timestamp", 0.0) or 0.0)
+        age = time.time() - tick_ts if tick_ts else None
+        freshness = (
+            "zojuist" if age is not None and age < 15
+            else f"{age / 60:.0f} min geleden" if age is not None and age < 3600
+            else "verouderd" if age is not None
+            else ""
+        )
+        col.caption(
+            f"bid €{float(tick.get('bid', 0.0)):,.2f} · "
+            f"ask €{float(tick.get('ask', 0.0)):,.2f}"
+            + (f" · {freshness}" if freshness else "")
+        )
+
+    with st.expander("📈 Prijsverloop (laatste 24 uur)"):
+        for symbol in sorted(snapshot):
+            history = query_df(
+                "SELECT timestamp, price FROM price_history "
+                "WHERE symbol = ? AND timestamp >= ? ORDER BY timestamp",
+                (symbol, day_ago),
+            )
+            if history.empty:
+                st.caption(f"{symbol}: nog geen prijshistorie opgebouwd.")
+                continue
+            fig = go.Figure(
+                go.Scatter(
+                    x=pd.to_datetime(history["timestamp"], unit="s"),
+                    y=history["price"], mode="lines", name=symbol,
+                    line={"color": "#6366f1", "width": 2},
+                )
+            )
+            fig.update_layout(
+                height=200, margin={"l": 10, "r": 10, "t": 26, "b": 10},
+                title=symbol, yaxis_title="€",
+            )
+            st.plotly_chart(fig, width="stretch")
+
+
 def render_settings_tab(cfg: dict[str, str]) -> None:
     """Runtime-adjustable settings persisted to ``bot_config``."""
     st.subheader("Control & Settings")
@@ -1122,6 +1189,7 @@ def main() -> None:
 
     cfg = load_config()
     render_header(cfg)
+    render_price_widget(cfg)
 
     tabs = st.tabs(
         ["⚙️ Control & Settings", "💼 Portfolio & Orders",
