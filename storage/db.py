@@ -92,6 +92,14 @@ CREATE TABLE IF NOT EXISTS equity_history (
     unrealized_pnl REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_equity_ts ON equity_history(timestamp);
+
+CREATE TABLE IF NOT EXISTS price_history (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol    TEXT NOT NULL,
+    timestamp REAL NOT NULL,
+    price     REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_price_symbol_ts ON price_history(symbol, timestamp);
 """
 
 
@@ -433,6 +441,42 @@ class Database:
             (timestamp if timestamp is not None else time.time(),
              total_equity, realized_pnl, unrealized_pnl),
         )
+
+    # ------------------------------------------------------------------
+    # price_history
+    # ------------------------------------------------------------------
+    async def record_prices(
+        self,
+        prices: dict[str, float],
+        timestamp: float | None = None,
+        retention_seconds: float = 7 * 86_400,
+    ) -> None:
+        """Append one price snapshot per symbol and prune entries older than
+        ``retention_seconds`` (the dashboard widget only needs recent data)."""
+        if not prices:
+            return
+        now = timestamp if timestamp is not None else time.time()
+        async with self.transaction() as conn:
+            await conn.executemany(
+                "INSERT INTO price_history (symbol, timestamp, price) VALUES (?, ?, ?)",
+                [(symbol, now, price) for symbol, price in prices.items()],
+            )
+            await conn.execute(
+                "DELETE FROM price_history WHERE timestamp < ?",
+                (now - retention_seconds,),
+            )
+
+    async def load_price_history(
+        self, symbol: str, since: float
+    ) -> list[tuple[float, float]]:
+        """Load ``(timestamp, price)`` points for ``symbol`` since ``since``."""
+        async with self.conn.execute(
+            "SELECT timestamp, price FROM price_history "
+            "WHERE symbol = ? AND timestamp >= ? ORDER BY timestamp",
+            (symbol, since),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [(float(r["timestamp"]), float(r["price"])) for r in rows]
 
     async def load_equity_history(
         self, limit: int = 1000

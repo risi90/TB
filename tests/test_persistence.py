@@ -125,6 +125,34 @@ async def test_equity_history_roundtrip(db: Database) -> None:
     assert history[-1][1] == pytest.approx(10_050.0)
 
 
+async def test_price_history_roundtrip_and_pruning(db: Database) -> None:
+    await db.record_prices({"BTC/EUR": 100.0, "ETH/EUR": 10.0}, timestamp=1_000.0)
+    await db.record_prices({"BTC/EUR": 101.0}, timestamp=2_000.0)
+    history = await db.load_price_history("BTC/EUR", since=0.0)
+    assert history == [(1_000.0, 100.0), (2_000.0, 101.0)]
+    assert await db.load_price_history("ETH/EUR", since=1_500.0) == []
+
+    # Points older than the retention window are pruned on the next write.
+    await db.record_prices(
+        {"BTC/EUR": 102.0}, timestamp=10_000.0, retention_seconds=5_000.0
+    )
+    history = await db.load_price_history("BTC/EUR", since=0.0)
+    assert [p for _, p in history] == [102.0]  # 1000/2000 fell out of retention
+
+    await db.record_prices({}, timestamp=3_000.0)  # empty snapshot is a no-op
+
+
+async def test_engine_ticker_snapshot() -> None:
+    engine = PaperEngine.create({"EUR": 1_000.0})
+    assert engine.ticker_snapshot() == {}
+    engine.process_ticker(make_ticker(bid=99.0, ask=101.0, last=100.0))
+    snapshot = engine.ticker_snapshot()
+    assert snapshot["BTC/EUR"]["bid"] == pytest.approx(99.0)
+    assert snapshot["BTC/EUR"]["ask"] == pytest.approx(101.0)
+    assert snapshot["BTC/EUR"]["last"] == pytest.approx(100.0)
+    assert snapshot["BTC/EUR"]["timestamp"] > 0
+
+
 async def test_grid_state_roundtrip(db: Database) -> None:
     await db.save_grid_state("grid:BTC/EUR", "BTC/EUR", '{"levels": 3}', "[]")
     row = await db.load_grid_state("grid:BTC/EUR")

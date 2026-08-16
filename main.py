@@ -381,6 +381,9 @@ class TradingApp:
                     {
                         "heartbeat_ts": str(time.time()),
                         "last_prices": json.dumps(self.paper_engine.last_prices()),
+                        "ticker_snapshot": json.dumps(
+                            self.paper_engine.ticker_snapshot()
+                        ),
                     }
                 )
             except Exception as exc:
@@ -393,6 +396,7 @@ class TradingApp:
             await asyncio.sleep(self.settings.equity_snapshot_interval)
             try:
                 await self.persistence.snapshot_equity(self.paper_engine)
+                await self.db.record_prices(self.paper_engine.last_prices())
             except Exception as exc:
                 logger.error("Equity snapshot failed: {}", exc)
 
