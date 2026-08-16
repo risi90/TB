@@ -36,7 +36,7 @@ _STATUS_COLORS = {"RUNNING": "#21c55d", "PAUSED": "#f59e0b", "STOPPED": "#ef4444
                   "OFFLINE": "#6b7280"}
 _CSS = """
 <style>
-    .block-container { padding-top: 1.2rem; }
+    .block-container { padding-top: 2.4rem; }
     div[data-testid="stMetric"] {
         background: rgba(128, 128, 128, 0.08);
         border: 1px solid rgba(128, 128, 128, 0.18);
@@ -148,7 +148,7 @@ def render_header(cfg: dict[str, str]) -> None:
     status = bot_display_status(cfg)
     color = _STATUS_COLORS.get(status, "#6b7280")
 
-    left, b1, b2, b3 = st.columns([3, 1, 1, 1])
+    left, b1, b2, b3 = st.columns([3, 1, 1, 1], vertical_alignment="center")
     with left:
         st.markdown(
             f"## 🤖 Trading Bot &nbsp; "
@@ -644,6 +644,163 @@ def render_backtest_tab(cfg: dict[str, str]) -> None:
     )
 
 
+def render_help_tab() -> None:
+    """In-app handleiding: keys, live gaan, exchanges, meldingen, FAQ."""
+    st.subheader("Help & Handleiding")
+    st.caption(
+        "Alles wat je moet weten om deze bot te bedienen. Instellingen met "
+        "een 🔐 zet je als environment variable op de server (Render → je "
+        "service → Environment → Edit), nooit in de code."
+    )
+
+    with st.expander("🚀 Hoe werkt deze bot?", expanded=True):
+        st.markdown(
+            """
+- De bot draait standaard in **paper-modus**: hij handelt met nepgeld
+  (startsaldo €10.000) tegen **echte live marktprijzen** van de exchange.
+  Er wordt niets gekocht of verkocht op je echte account.
+- De **grid-strategie** zet kooporders onder de huidige prijs. Zakt de
+  prijs op zo'n niveau, dan koopt hij; stijgt de prijs daarna één niveau,
+  dan verkoopt hij met winst. Elke positie krijgt automatisch een
+  stop-loss en take-profit.
+- Alles wat je hier in **Control & Settings** opslaat past de bot binnen
+  enkele seconden toe — geen herstart nodig.
+- **Pause** = geen nieuwe aankopen (verkopen en beveiligingen blijven
+  actief). **Stop** = proces stoppen; op Render start de service daarna
+  automatisch opnieuw, gebruik dus meestal Pause.
+- Test een strategie-idee altijd eerst in het **Backtesting**-tabblad
+  voordat je de live instellingen aanpast.
+            """
+        )
+
+    with st.expander("🔑 Bitvavo / Kraken API-keys instellen"):
+        st.markdown(
+            """
+API-keys zijn **alleen nodig om met echt geld te handelen**. Paper trading
+werkt zonder keys — marktdata is publiek.
+
+**Bitvavo:**
+1. Log in op bitvavo.com → profiel-icoon → **API**
+2. Maak een nieuwe API-key aan met rechten **Bekijken** en **Handelen**
+3. ⛔ Zet **Opnames/Withdrawals UIT** — de bot hoeft nooit geld op te
+   nemen, en een gelekte key kan dan geen geld wegsluizen
+4. Vul de key en secret in als 🔐 `API_KEY` en 🔐 `API_SECRET`
+
+**Kraken:** kraken.com → Settings → **API** → Create key, met permissies
+*Query Funds* en *Create & Modify Orders* (geen withdrawal-rechten).
+Zet daarnaast 🔐 `EXCHANGE` op `kraken` (vereist een herstart van de bot).
+
+**Waar invullen (Render):** je service → **Environment** → knop
+**Edit** → voeg de variabele toe (staat hij niet in de lijst, dan maak je
+hem daar gewoon nieuw aan) → **Save**. De service herstart vanzelf en de
+bot gaat verder waar hij was.
+            """
+        )
+
+    with st.expander("⚠️ Live gaan met echt geld — lees dit eerst"):
+        st.markdown(
+            """
+**Veiligheidsmodel:** echte orders zijn hard geblokkeerd zolang
+`PAPER_TRADING=True` staat. Live handelen vereist twee bewuste stappen —
+er is geen knop in dit dashboard die dat per ongeluk kan aanzetten.
+
+**Stappenplan:**
+1. Draai **minimaal een paar weken** paper en controleer onder Analytics
+   dat de bot *netto* (na fees) structureel iets verdient en zich
+   verstandig gedraagt in dalingen
+2. Maak API-keys aan zoals hierboven (zonder withdrawal-rechten!)
+3. Zet in Render → Environment: 🔐 `API_KEY`, 🔐 `API_SECRET` en wijzig
+   🔐 `PAPER_TRADING` naar `False`
+4. De service herstart; in de logs zie je de waarschuwing
+   **"LIVE TRADING ENABLED"**
+5. **Begin klein**: verlaag eerst `Grid order size` (bijv. €10–25) en
+   houd de eerste dagen de meldingen en het dashboard goed in de gaten
+
+**Eerlijke waarschuwing:** de paper-modus van deze bot is grondig getest;
+de live-modus is functioneel maar eenvoudiger uitgevoerd (orders worden
+geplaatst, maar fill-tracking via de exchange is basaal en stop-losses
+worden door de bot zelf bewaakt — niet als order op de exchange gezet).
+Valt het bot-proces uit, dan liggen je posities zonder actieve bewaking.
+Ga dus alleen live met bedragen die je kunt missen, of vraag eerst om de
+live-modus verder uit te laten bouwen.
+            """
+        )
+
+    with st.expander("👀 Zie ik de trades terug op Bitvavo/Kraken?"):
+        st.markdown(
+            """
+- **Paper-modus (nu): nee.** Alle orders zijn gesimuleerd en bestaan
+  alleen in de database van de bot. Op de exchange is niets te zien —
+  de bot *leest* er alleen prijzen.
+- **Live-modus: ja.** Orders verschijnen dan gewoon in je
+  Bitvavo/Kraken-account onder open orders en handelsgeschiedenis, en
+  je saldo verandert echt mee.
+            """
+        )
+
+    with st.expander("📣 Meldingen op je telefoon (Telegram / Discord)"):
+        st.markdown(
+            """
+De bot kan pushen bij elke fill, stop-loss/take-profit, de
+drawdown-noodrem, verbroken verbindingen en een dagelijkse PnL-samenvatting.
+
+**Telegram:**
+1. Open Telegram → zoek **@BotFather** → stuur `/newbot` → je krijgt een
+   token (`1234567:AAH...`) → 🔐 `TELEGRAM_BOT_TOKEN`
+2. Zoek **@userinfobot** → stuur een bericht → je id (getal) →
+   🔐 `TELEGRAM_CHAT_ID`
+3. Stuur je nieuwe bot zelf één berichtje (anders mag hij jou niets sturen)
+4. Test hierboven bij **Control & Settings → Send test notification**
+
+**Discord:** rechtsklik op een kanaal → Kanaal bewerken → Integraties →
+Webhooks → nieuwe webhook → URL kopiëren → 🔐 `DISCORD_WEBHOOK_URL`
+            """
+        )
+
+    with st.expander("🔁 Op twee exchanges tegelijk? (arbitrage — géén wash trading)"):
+        st.markdown(
+            """
+**Even de termen scherp:**
+- **Arbitrage** = prijsverschillen tussen twee exchanges benutten (op de
+  goedkope kopen, op de dure verkopen). Dat is **legaal** en waarschijnlijk
+  wat je bedoelt.
+- **Wash trading** = met jezelf handelen om nepvolume of nepprijzen te
+  creëren. Dat is **marktmanipulatie en verboden** — dat doet en
+  ondersteunt deze bot niet.
+
+**Kan deze bot arbitrage?** Nog niet: één bot-proces handelt op één
+exchange. Je *kunt* wel twee losse bots draaien (één op Bitvavo, één op
+Kraken, elk met eigen database), maar dat is onafhankelijk handelen, geen
+arbitrage.
+
+**Realistisch beeld:** arbitrage tussen Bitvavo en Kraken klinkt
+aantrekkelijk, maar de prijsverschillen zijn meestal kleiner dan
+2× de handelsfees, en professionele partijen met co-locatie zijn je
+vrijwel altijd voor. Wil je het toch verkennen, vraag dan om een
+arbitrage-monitor die eerst alleen *meet* hoe vaak een winstgevend
+verschil (na fees) echt voorkomt — dat is de zinnige eerste stap.
+            """
+        )
+
+    with st.expander("🛠️ Problemen oplossen"):
+        st.markdown(
+            """
+- **Status OFFLINE** — het bot-proces draait niet. Op Render: check
+  Events/Logs; lokaal: start `python main.py`.
+- **Deploy mislukt op Render** — meestal een ontbrekende environment
+  variable (bijv. `DASHBOARD_PASSWORD`): Environment → Edit → variabele
+  toevoegen → Save, daarna Manual Deploy → *Deploy latest commit*.
+- **Instelling wordt geweigerd** — de bot valideert alles; bijv. grid
+  spacing onder de fee-vloer (2× maker fee + 0,1%) wordt bewust
+  geblokkeerd omdat elke cyclus dan verlies draait.
+- **Bot herstart / server opnieuw opgestart?** Geen probleem: alle
+  posities, orders en het grid staan in de database en worden hersteld.
+- **Logs bekijken:** tabblad *Live Logs* hierboven, of op Render onder
+  *Logs*.
+            """
+        )
+
+
 def render_logs_tab() -> None:
     """Tail of the bot's rotating log file."""
     st.subheader("Live Logs")
@@ -706,20 +863,22 @@ def main() -> None:
     cfg = load_config()
     render_header(cfg)
 
-    tab_settings, tab_portfolio, tab_analytics, tab_logs, tab_backtest = st.tabs(
+    tabs = st.tabs(
         ["⚙️ Control & Settings", "💼 Portfolio & Orders",
-         "📊 Analytics & Grid", "📜 Live Logs", "🧪 Backtesting"]
+         "📊 Analytics & Grid", "📜 Live Logs", "🧪 Backtesting", "❓ Help"]
     )
-    with tab_settings:
+    with tabs[0]:
         render_settings_tab(cfg)
-    with tab_portfolio:
+    with tabs[1]:
         render_portfolio_tab(cfg)
-    with tab_analytics:
+    with tabs[2]:
         render_analytics_tab(cfg)
-    with tab_logs:
+    with tabs[3]:
         render_logs_tab()
-    with tab_backtest:
+    with tabs[4]:
         render_backtest_tab(cfg)
+    with tabs[5]:
+        render_help_tab()
 
     with st.sidebar:
         st.markdown("### Refresh")
