@@ -41,6 +41,8 @@ services:
       - key: BAR_TIMEFRAME
         value: 1m
       # --- secrets (set values in the Render dashboard) -------------------
+      - key: DASHBOARD_PASSWORD
+        sync: false
       - key: API_KEY
         sync: false
       - key: API_SECRET

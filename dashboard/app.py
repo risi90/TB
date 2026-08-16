@@ -13,6 +13,7 @@ polls and applies live. The dashboard never places orders itself.
 
 from __future__ import annotations
 
+import hmac
 import json
 import sqlite3
 import sys
@@ -658,12 +659,43 @@ def render_logs_tab() -> None:
     st.code("\n".join(content[-lines:]) or "(no matching lines)", language="log")
 
 
+def require_password() -> bool:
+    """Gate the dashboard behind ``DASHBOARD_PASSWORD`` when configured.
+
+    With no password configured (e.g. local development) the dashboard stays
+    open. Otherwise a login form is shown until the correct password is
+    entered; the result is kept in the Streamlit session, so each browser
+    session logs in once. Comparison is constant-time via ``hmac``.
+    """
+    expected = get_settings_cached().dashboard_password
+    if not expected:
+        return True
+    if st.session_state.get("auth_ok", False):
+        return True
+
+    st.markdown("## 🔒 Trading Bot Dashboard")
+    st.caption("This dashboard is password-protected.")
+    with st.form("login"):
+        entered = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Log in", type="primary")
+    if submitted:
+        if hmac.compare_digest(entered, expected):
+            st.session_state["auth_ok"] = True
+            st.rerun()
+        else:
+            st.error("Incorrect password.")
+    return False
+
+
 def main() -> None:
     """Compose the dashboard page."""
     st.set_page_config(
         page_title="Trading Bot Dashboard", page_icon="🤖", layout="wide"
     )
     st.markdown(_CSS, unsafe_allow_html=True)
+
+    if not require_password():
+        return
 
     if not Path(get_settings_cached().db_path).exists():
         st.warning(
@@ -697,6 +729,10 @@ def main() -> None:
             st.rerun()
         st.caption("The dashboard reads the bot's SQLite database; the bot "
                    "applies saved settings within its config poll interval.")
+        if get_settings_cached().dashboard_password:
+            if st.button("🚪 Log out", width="stretch"):
+                st.session_state["auth_ok"] = False
+                st.rerun()
 
     if auto:
         time.sleep(interval)
