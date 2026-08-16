@@ -52,6 +52,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sma-slow", type=int, default=30)
     parser.add_argument("--stop-loss", type=float, default=0.02, help="Stop-loss fraction")
     parser.add_argument("--take-profit", type=float, default=0.04, help="Take-profit fraction")
+    parser.add_argument(
+        "--per-entry-sl", action="store_true",
+        help="Grid only: use the legacy per-entry stop-loss instead of the "
+        "grid-aligned stop below the whole grid",
+    )
     parser.add_argument("--cache-dir", default="data/historical")
     parser.add_argument("--output", default=None, help="Optional CSV path for the trade history")
     return parser
@@ -64,6 +69,9 @@ def _build_strategy(args: argparse.Namespace) -> BaseStrategy:
             levels=args.grid_levels,
             spacing_pct=args.grid_spacing,
             order_quote_size=args.grid_order_size,
+            aligned_protection=not args.per_entry_sl,
+            stop_loss_buffer_pct=args.stop_loss,
+            take_profit_buffer_pct=args.take_profit,
         )
     return SmaCrossoverStrategy(
         symbol=args.symbol,

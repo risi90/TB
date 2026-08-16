@@ -54,6 +54,9 @@ def build_strategy(settings: Settings, symbol: str) -> BaseStrategy:
             auto_reanchor=settings.grid_auto_reanchor,
             reanchor_factor=settings.grid_reanchor_factor,
             max_inventory_quote=settings.grid_max_inventory_quote or None,
+            aligned_protection=settings.grid_aligned_protection,
+            stop_loss_buffer_pct=settings.stop_loss_pct,
+            take_profit_buffer_pct=settings.take_profit_pct,
         )
     return SmaCrossoverStrategy(
         symbol=symbol,
