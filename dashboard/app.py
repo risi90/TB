@@ -461,6 +461,9 @@ def render_backtest_tab(cfg: dict[str, str]) -> None:
                 "Grid-bewuste stop-loss (SL onder de hele grid)", value=True,
                 help="Uit = klassieke stop-loss per aankoop",
             )
+            grid_regime = st.checkbox(
+                "Regime-filter (pauzeer kopen in dalende trend)", value=True,
+            )
         with c3:
             st.markdown("**SMA parameters**")
             sma_fast = st.number_input("SMA fast period", 2, 500, 10)
@@ -505,6 +508,8 @@ def render_backtest_tab(cfg: dict[str, str]) -> None:
                 st.error("No historical data available for this range.")
                 return
             if strategy_name == "grid":
+                from strategies.regime import RegimeFilter
+
                 strategy = GridTradingStrategy(
                     symbol, levels=int(grid_levels),
                     spacing_pct=grid_spacing / 100.0,
@@ -512,6 +517,7 @@ def render_backtest_tab(cfg: dict[str, str]) -> None:
                     aligned_protection=grid_aligned_sl,
                     stop_loss_buffer_pct=fnum("stop_loss_pct", 0.02),
                     take_profit_buffer_pct=fnum("take_profit_pct", 0.04),
+                    regime_filter=RegimeFilter() if grid_regime else None,
                 )
             else:
                 strategy = SmaCrossoverStrategy(
@@ -679,6 +685,9 @@ def render_optimizer_tab(cfg: dict[str, str]) -> None:
                 "Grid-bewuste stop-loss (SL onder de hele grid)", value=True,
                 help="Uit = klassieke stop-loss per aankoop (ter vergelijking)",
             )
+            regime = st.checkbox(
+                "Regime-filter (pauzeer kopen in dalende trend)", value=True,
+            )
         with c3:
             maker_fee = st.slider("Maker fee (%)", 0.0, 1.0, 0.15, step=0.01)
             taker_fee = st.slider("Taker fee (%)", 0.0, 1.0, 0.25, step=0.01)
@@ -733,6 +742,7 @@ def render_optimizer_tab(cfg: dict[str, str]) -> None:
                     taker_fee_rate=taker_fee / 100.0,
                     slippage_rate=slippage / 100.0,
                     aligned_protection=aligned,
+                    regime_filter=regime,
                     progress=on_progress,
                 )
             )
@@ -854,6 +864,49 @@ def render_help_tab() -> None:
         "een 🔐 zet je als environment variable op de server (Render → je "
         "service → Environment → Edit), nooit in de code."
     )
+
+    with st.expander("📖 Wat is grid trading? En SMA? (begrippen uitgelegd)"):
+        st.markdown(
+            """
+**Grid trading** — je legt een "rooster" (grid) van kooporders onder de
+huidige prijs, bijvoorbeeld elke 1% één. Zakt de prijs 1%, dan koop je een
+klein beetje; stijgt hij daarna weer 1%, dan verkoop je dat plukje met
+winst. Je verdient dus aan het **op-en-neer wiebelen** van de prijs, niet
+aan de richting. Werkt goed in zijwaartse (wiebelende) markten; verliest
+in sterke dalingen (je koopt steeds bij terwijl het blijft zakken — daarom
+zit er nu een regime-filter en een noodstop onder de hele grid) en
+verdient weinig in sterke stijgingen (je verkoopt te vroeg).
+
+**SMA (Simple Moving Average)** — het gemiddelde van de laatste N
+slotkoersen, bijvoorbeeld de laatste 30 uren. Het "gladt" de prijs af
+zodat je de onderliggende richting ziet.
+
+**SMA-crossover-strategie** — gebruikt twee gemiddelden: een snel (bijv.
+10 bars) en een traag (bijv. 30 bars). Kruist het snelle gemiddelde
+**omhoog** door het trage ("golden cross"), dan is de trend opwaarts →
+kopen. Kruist het **omlaag** ("death cross") → verkopen. Dit is een
+**trendvolgende** strategie: goed in lange stijgingen, maar in wiebelende
+markten geeft hij veel valse signalen (en elke valse ronde kost fees).
+
+**Vuistregel:** grid = verdient aan wiebelen, SMA = verdient aan trends.
+Ze zijn elkaars spiegelbeeld — vandaar dat de Optimizer je laat zien in
+welk regime je data zat.
+
+**Andere termen die je tegenkomt:**
+- *Maker/taker fee* — kosten per transactie: maker (order die wacht in
+  het orderboek, 0,15%) is goedkoper dan taker (order die direct
+  uitgevoerd wordt, 0,25%).
+- *Slippage* — het prijsverschil tussen wat je wilde en wat je kreeg bij
+  een directe (market) order.
+- *Stop-loss / take-profit* — automatische verkoop bij een bepaald
+  verlies (noodrem) of winst (winst veiligstellen).
+- *Drawdown* — hoe diep je portefeuille onder zijn hoogste punt zakt.
+- *Sharpe-ratio* — rendement gedeeld door beweeglijkheid; hoger = meer
+  rendement per eenheid risico (>1 is netjes).
+- *Buy & Hold (B&H)* — gewoon kopen en vasthouden; de lat waar elke
+  strategie overheen moet om zinvol te zijn.
+            """
+        )
 
     with st.expander("🚀 Hoe werkt deze bot?", expanded=True):
         st.markdown(
