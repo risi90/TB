@@ -70,6 +70,15 @@ class GridTradingStrategy(BaseStrategy):
             one full grid (``levels × order_quote_size``) — this matters after
             downward re-anchors, which would otherwise stack inventory
             without bound on a falling market.
+        aligned_protection: Stamp grid-aware protective levels on entries:
+            the stop-loss sits ``stop_loss_buffer_pct`` **below the bottom of
+            the whole grid** (instead of below each individual entry, which
+            turns the dips the grid is designed to buy into realized losses)
+            and the take-profit sits ``take_profit_buffer_pct`` above the
+            anchor. Disabled, entries carry no levels and the risk manager
+            stamps its per-entry defaults.
+        stop_loss_buffer_pct: Distance of the stop below the lowest rung.
+        take_profit_buffer_pct: Distance of the take-profit above the anchor.
     """
 
     def __init__(
@@ -81,6 +90,9 @@ class GridTradingStrategy(BaseStrategy):
         auto_reanchor: bool = True,
         reanchor_factor: float = 1.5,
         max_inventory_quote: float | None = None,
+        aligned_protection: bool = True,
+        stop_loss_buffer_pct: float = 0.02,
+        take_profit_buffer_pct: float = 0.04,
     ) -> None:
         super().__init__(symbol)
         if levels < 1:
@@ -97,6 +109,9 @@ class GridTradingStrategy(BaseStrategy):
         self._auto_reanchor = auto_reanchor
         self._reanchor_factor = reanchor_factor
         self._max_inventory_quote = max_inventory_quote
+        self._aligned_protection = aligned_protection
+        self._stop_loss_buffer_pct = stop_loss_buffer_pct
+        self._take_profit_buffer_pct = take_profit_buffer_pct
         self._anchor_price: float | None = None
         self._grid: list[_GridLevel] = []
         self._pending_requests: list[OrderRequest] = []
@@ -424,9 +439,27 @@ class GridTradingStrategy(BaseStrategy):
                 total += level.amount * level.buy_price
         return total
 
+    def grid_floor_price(self) -> float | None:
+        """Price of the lowest (fresh) rung, or ``None`` before the grid exists."""
+        if self._anchor_price is None:
+            return None
+        return self._anchor_price * (1.0 - self._spacing_pct * self._levels_count)
+
+    def _protective_levels(self) -> tuple[float | None, float | None]:
+        """Grid-aware (stop_loss, take_profit) for new entries, if enabled."""
+        floor = self.grid_floor_price()
+        if not self._aligned_protection or floor is None:
+            return None, None
+        assert self._anchor_price is not None
+        return (
+            floor * (1.0 - self._stop_loss_buffer_pct),
+            self._anchor_price * (1.0 + self._take_profit_buffer_pct),
+        )
+
     def _arm_idle_levels(self) -> None:
         cap = self.inventory_cap_quote
         committed = self._committed_quote()
+        stop_loss, take_profit = self._protective_levels()
         for level in self._grid:
             if level.state is not _LevelState.IDLE or level.stale:
                 continue
@@ -444,6 +477,8 @@ class GridTradingStrategy(BaseStrategy):
                     type=OrderType.LIMIT,
                     amount=amount,
                     price=level.buy_price,
+                    stop_loss=stop_loss,
+                    take_profit=take_profit,
                 )
             )
             level.state = _LevelState.BUY_PENDING

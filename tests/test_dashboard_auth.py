@@ -25,7 +25,7 @@ def test_no_password_configured_leaves_dashboard_open(
 ) -> None:
     monkeypatch.delenv("DASHBOARD_PASSWORD", raising=False)
     at = _run_app()
-    assert len(at.tabs) == 6  # full dashboard rendered, no login form
+    assert len(at.tabs) == 7  # full dashboard rendered, no login form
 
 
 def test_password_locks_dashboard_until_login(
@@ -49,4 +49,4 @@ def test_password_locks_dashboard_until_login(
     at.run()
     assert not at.exception, [e.message for e in at.exception]
     assert at.session_state["auth_ok"] is True
-    assert len(at.tabs) == 6
+    assert len(at.tabs) == 7

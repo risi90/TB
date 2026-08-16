@@ -457,6 +457,10 @@ def render_backtest_tab(cfg: dict[str, str]) -> None:
             grid_order_size = st.number_input(
                 "Grid order size (€)", 1.0, value=fnum("grid_order_quote_size", 100.0)
             )
+            grid_aligned_sl = st.checkbox(
+                "Grid-bewuste stop-loss (SL onder de hele grid)", value=True,
+                help="Uit = klassieke stop-loss per aankoop",
+            )
         with c3:
             st.markdown("**SMA parameters**")
             sma_fast = st.number_input("SMA fast period", 2, 500, 10)
@@ -505,6 +509,9 @@ def render_backtest_tab(cfg: dict[str, str]) -> None:
                     symbol, levels=int(grid_levels),
                     spacing_pct=grid_spacing / 100.0,
                     order_quote_size=grid_order_size,
+                    aligned_protection=grid_aligned_sl,
+                    stop_loss_buffer_pct=fnum("stop_loss_pct", 0.02),
+                    take_profit_buffer_pct=fnum("take_profit_pct", 0.04),
                 )
             else:
                 strategy = SmaCrossoverStrategy(
@@ -644,6 +651,201 @@ def render_backtest_tab(cfg: dict[str, str]) -> None:
     )
 
 
+def render_optimizer_tab(cfg: dict[str, str]) -> None:
+    """Grid parameter sweep with in-sample / out-of-sample validation."""
+    st.subheader("Parameter Sweep (grid)")
+    st.caption(
+        "Test tientallen combinaties van spacing × levels × stop-loss in één "
+        "run. Elke combinatie draait drie keer: de hele periode, een "
+        "trainvenster (eerste 70%) en een **out-of-sample** testvenster "
+        "(laatste 30%). Alleen combinaties die in *beide* vensters netto "
+        "winnen zijn serieuze kandidaten — de rest is meestal toeval."
+    )
+
+    symbols = [s.strip() for s in cfg.get("symbols", "BTC/EUR").split(",") if s.strip()]
+    symbol_options = list(dict.fromkeys(symbols + ["BTC/EUR", "ETH/EUR", "XRP/EUR", "SOL/EUR"]))
+
+    with st.form("sweep_form"):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            symbol = st.selectbox("Symbol", symbol_options, index=0)
+            timeframe = st.selectbox("Timeframe", ["15m", "1h", "4h", "1d"], index=1)
+            days = st.number_input("Periode (dagen)", 14, 365, 90)
+            exchange = st.selectbox("Exchange", ["bitvavo", "kraken"], index=0)
+        with c2:
+            capital = st.number_input("Startkapitaal (€)", 100.0, value=10_000.0, step=500.0)
+            order_size = st.number_input("Grid order size (€)", 1.0, value=100.0, step=10.0)
+            aligned = st.checkbox(
+                "Grid-bewuste stop-loss (SL onder de hele grid)", value=True,
+                help="Uit = klassieke stop-loss per aankoop (ter vergelijking)",
+            )
+        with c3:
+            maker_fee = st.slider("Maker fee (%)", 0.0, 1.0, 0.15, step=0.01)
+            taker_fee = st.slider("Taker fee (%)", 0.0, 1.0, 0.25, step=0.01)
+            slippage = st.slider("Slippage (%)", 0.0, 1.0, 0.05, step=0.01)
+
+        spacings = st.multiselect(
+            "Grid spacing (%)", [0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0],
+            default=[0.5, 1.0, 1.5, 2.0, 3.0],
+        )
+        levels_options = st.multiselect("Grid levels", [3, 5, 8, 12], default=[3, 5, 8])
+        stop_losses = st.multiselect(
+            "Stop-loss (%)", [2.0, 5.0, 10.0, 15.0, 25.0], default=[2.0, 10.0],
+            help="Bij grid-bewuste SL: buffer onder de onderkant van de grid",
+        )
+        run_sweep_clicked = st.form_submit_button("🔬 Run Sweep", type="primary")
+
+    if run_sweep_clicked:
+        import asyncio
+
+        from backtester.data_loader import OHLCVDataLoader, candles_from_df
+        from backtester.optimizer import sweep_grid
+
+        if not spacings or not levels_options or not stop_losses:
+            st.error("Kies minstens één waarde per parameter.")
+            return
+        end_ms = int(time.time() * 1000)
+        start_ms = end_ms - int(days) * 86_400_000
+        try:
+            with st.spinner("Historische data laden (cache-aware)…"):
+                loader = OHLCVDataLoader(exchange_id=exchange)
+                df = loader.load(symbol, timeframe, start_ms, end_ms)
+            if df.empty:
+                st.error("Geen historische data voor deze periode.")
+                return
+            candles = candles_from_df(df)
+            bar = st.progress(0.0, text="Sweep draait…")
+
+            def on_progress(done: int, total: int) -> None:
+                bar.progress(
+                    done / total, text=f"Sweep draait… {done}/{total} combinaties"
+                )
+
+            results = asyncio.run(
+                sweep_grid(
+                    candles, symbol, timeframe,
+                    spacings=[s / 100.0 for s in spacings],
+                    levels_options=[int(v) for v in levels_options],
+                    stop_loss_pcts=[s / 100.0 for s in stop_losses],
+                    order_quote_size=order_size,
+                    initial_capital=capital,
+                    maker_fee_rate=maker_fee / 100.0,
+                    taker_fee_rate=taker_fee / 100.0,
+                    slippage_rate=slippage / 100.0,
+                    aligned_protection=aligned,
+                    progress=on_progress,
+                )
+            )
+            bar.empty()
+            st.session_state["sweep"] = {
+                "results": results, "symbol": symbol, "timeframe": timeframe,
+                "days": days,
+            }
+        except Exception as exc:
+            st.error(f"Sweep mislukt: {exc}")
+            return
+
+    stored = st.session_state.get("sweep")
+    if not stored:
+        st.info("Stel de parameterlijsten in en klik **Run Sweep**.")
+        return
+
+    results = stored["results"]
+    viable = [r for r in results if r.viable]
+    robust = [r for r in viable if r.robust]
+    excluded = [r for r in results if not r.viable]
+
+    if robust:
+        best = robust[0]
+        st.success(
+            f"**{len(robust)} van {len(viable)} combinaties zijn robuust** "
+            f"(winst in train én test). Beste out-of-sample: spacing "
+            f"{best.spacing_pct:.2%}, {best.levels} levels, SL "
+            f"{best.stop_loss_pct:.0%} → test {best.test_return_pct:+.2f}% "
+            f"(B&H hele periode: {best.benchmark_return_pct:+.2f}%)"
+        )
+    else:
+        st.warning(
+            "**Geen enkele combinatie is winstgevend in zowel train- als "
+            "testperiode.** Dat is een geldig resultaat: in deze periode "
+            "heeft de grid-strategie op dit symbool geen netto voordeel. "
+            "Probeer een andere periode/timeframe — en als dat beeld blijft, "
+            "is niet-live-gaan de winstgevende keuze."
+        )
+    if excluded:
+        st.caption(
+            f"{len(excluded)} combinaties overgeslagen: spacing onder de "
+            f"fee-vloer (verliezen per constructie)."
+        )
+
+    # --- results table ---------------------------------------------------
+    table = pd.DataFrame([r.to_dict() for r in viable])
+    if not table.empty:
+        table = table[
+            ["robust", "spacing_pct", "levels", "stop_loss_pct",
+             "train_return_pct", "test_return_pct", "full_return_pct",
+             "benchmark_return_pct", "max_drawdown_pct", "win_rate_pct",
+             "profit_factor", "total_trades", "total_fees"]
+        ]
+        table["spacing_pct"] = (table["spacing_pct"] * 100).round(2)
+        table["stop_loss_pct"] = (table["stop_loss_pct"] * 100).round(1)
+        numeric = ["train_return_pct", "test_return_pct", "full_return_pct",
+                   "benchmark_return_pct", "max_drawdown_pct", "win_rate_pct",
+                   "profit_factor", "total_fees"]
+        table[numeric] = table[numeric].round(2)
+        table = table.rename(columns={
+            "robust": "✓", "spacing_pct": "spacing %", "stop_loss_pct": "SL %",
+            "train_return_pct": "train %", "test_return_pct": "test %",
+            "full_return_pct": "totaal %", "benchmark_return_pct": "B&H %",
+            "max_drawdown_pct": "maxDD %", "win_rate_pct": "winrate %",
+            "profit_factor": "PF", "total_trades": "trades",
+            "total_fees": "fees €",
+        })
+        st.dataframe(table, width="stretch", hide_index=True)
+
+    # --- heatmap ---------------------------------------------------------
+    level_values = sorted({r.levels for r in viable})
+    if level_values:
+        chosen_levels = st.radio(
+            "Heatmap voor grid levels:", level_values, horizontal=True
+        )
+        subset = [r for r in viable if r.levels == chosen_levels]
+        xs = sorted({r.stop_loss_pct for r in subset})
+        ys = sorted({r.spacing_pct for r in subset})
+        z = [
+            [
+                next(
+                    (r.full_return_pct for r in subset
+                     if r.spacing_pct == y_val and r.stop_loss_pct == x_val),
+                    None,
+                )
+                for x_val in xs
+            ]
+            for y_val in ys
+        ]
+        fig = go.Figure(
+            go.Heatmap(
+                z=z,
+                x=[f"SL {x:.0%}" for x in xs],
+                y=[f"{y:.2%}" for y in ys],
+                colorscale="RdYlGn", zmid=0,
+                texttemplate="%{z:.2f}%",
+                colorbar={"title": "Netto rendement %"},
+            )
+        )
+        fig.update_layout(
+            height=90 + 60 * len(ys),
+            margin={"l": 10, "r": 10, "t": 30, "b": 10},
+            title=f"Netto rendement hele periode — {chosen_levels} levels",
+            yaxis_title="Grid spacing",
+        )
+        st.plotly_chart(fig, width="stretch")
+        st.caption(
+            "Let op: kies op basis van de **test %**-kolom (out-of-sample), "
+            "niet op de mooiste cel in deze heatmap — die kan overfitting zijn."
+        )
+
+
 def render_help_tab() -> None:
     """In-app handleiding: keys, live gaan, exchanges, meldingen, FAQ."""
     st.subheader("Help & Handleiding")
@@ -661,8 +863,13 @@ def render_help_tab() -> None:
   Er wordt niets gekocht of verkocht op je echte account.
 - De **grid-strategie** zet kooporders onder de huidige prijs. Zakt de
   prijs op zo'n niveau, dan koopt hij; stijgt de prijs daarna één niveau,
-  dan verkoopt hij met winst. Elke positie krijgt automatisch een
-  stop-loss en take-profit.
+  dan verkoopt hij met winst. De stop-loss zit standaard **onder de
+  onderkant van de hele grid** (niet onder elke losse aankoop — dat zou de
+  dips die de grid juist wil kopen omzetten in verliezen) en er is een
+  take-profit boven het anker.
+- Gebruik het **🔬 Optimizer**-tabblad om tientallen
+  instelling-combinaties tegelijk te backtesten; alleen combinaties die
+  in trainings- én testperiode winnen zijn serieuze kandidaten.
 - Alles wat je hier in **Control & Settings** opslaat past de bot binnen
   enkele seconden toe — geen herstart nodig.
 - **Pause** = geen nieuwe aankopen (verkopen en beveiligingen blijven
@@ -865,7 +1072,8 @@ def main() -> None:
 
     tabs = st.tabs(
         ["⚙️ Control & Settings", "💼 Portfolio & Orders",
-         "📊 Analytics & Grid", "📜 Live Logs", "🧪 Backtesting", "❓ Help"]
+         "📊 Analytics & Grid", "📜 Live Logs", "🧪 Backtesting",
+         "🔬 Optimizer", "❓ Help"]
     )
     with tabs[0]:
         render_settings_tab(cfg)
@@ -878,6 +1086,8 @@ def main() -> None:
     with tabs[4]:
         render_backtest_tab(cfg)
     with tabs[5]:
+        render_optimizer_tab(cfg)
+    with tabs[6]:
         render_help_tab()
 
     with st.sidebar:

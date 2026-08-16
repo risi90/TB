@@ -70,6 +70,11 @@ class Settings(BaseSettings):
     grid_order_quote_size: float = Field(default=100.0, gt=0)
     grid_auto_reanchor: bool = True
     grid_reanchor_factor: float = Field(default=1.5, gt=0)
+    grid_aligned_protection: bool = Field(
+        default=True,
+        description="Stop-loss below the whole grid instead of below each "
+        "entry (per-entry stops turn normal grid dips into realized losses).",
+    )
     grid_max_inventory_quote: float = Field(
         default=0.0, ge=0,
         description="Committed-capital cap in quote currency; 0 = one full grid.",
